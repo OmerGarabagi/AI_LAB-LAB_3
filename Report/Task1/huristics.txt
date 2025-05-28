@@ -1,0 +1,126 @@
+# -------------------------------------------------
+# Multi‑Stage Heuristic – Clarke‑Wright + Relocate
+# -------------------------------------------------
+def multistage_clarke_wright(
+    coords: list[tuple[float, float]],
+    demands: list[int],
+    capacity: int,
+) -> Solution:
+    n = len(coords)
+    nodes = [Node(i, *coords[i], demands[i]) for i in range(n)]
+    depot = nodes[0]
+
+    # --- Stage 1: Clarke–Wright parallel savings ---
+    # Start with one route per customer (depot‑i‑depot)
+    routes: dict[int, Route] = {
+        i: Route([depot, nodes[i], depot]) for i in range(1, n)
+    }
+
+    # Compute savings S_ij
+    savings = []
+    for i in range(1, n):
+        for j in range(i + 1, n):
+            s = (
+                depot.distance_to(nodes[i])
+                + depot.distance_to(nodes[j])
+                - nodes[i].distance_to(nodes[j])
+            )
+            savings.append((s, i, j))
+    savings.sort(reverse=True)  # descending
+
+    # Helper maps: which route a customer currently belongs to,
+    # whether customer is at start/end (needed for feasible merge).
+    route_of = {i: i for i in range(1, n)}
+
+    for s, i, j in savings:
+        ri_id = route_of[i]
+        rj_id = route_of[j]
+        if ri_id == rj_id:
+            continue  # already in same route
+
+        ri = routes[ri_id]
+        rj = routes[rj_id]
+
+        # We can only merge if i is at route end of ri and j at route start of rj
+        if (
+            ri.nodes[-2].id != i
+            or rj.nodes[1].id != j
+        ):
+            # try the opposite direction
+            if ri.nodes[1].id != i or rj.nodes[-2].id != j:
+                continue
+
+            # flip rj to have j at start
+            rj.nodes = [depot] + rj.nodes[1:-1][::-1] + [depot]
+
+        # Capacity check
+        if ri.load() + rj.load() > capacity:
+            continue
+
+        # Merge rj after ri (excluding duplicate depots)
+        merged_nodes = ri.nodes[:-1] + rj.nodes[1:]
+        new_route = Route(merged_nodes)
+
+        # Replace routes
+        new_id = ri_id
+        routes[new_id] = new_route
+        del routes[rj_id]
+
+        # Update mapping
+        for node in new_route.nodes[1:-1]:
+            route_of[node.id] = new_id
+
+    initial_solution = Solution(list(routes.values()))
+
+    # --- Stage 2: single‑pass relocate improvement ---
+    improved = True
+    while improved:
+        improved = False
+        for r_from in initial_solution.routes:
+            # skip depot only routes
+            if len(r_from.nodes) <= 3:
+                continue
+            for customer_idx in range(1, len(r_from.nodes) - 1):
+                cust = r_from.nodes[customer_idx]
+                for r_to in initial_solution.routes:
+                    if r_to is r_from:
+                        continue
+                    if r_to.load() + cust.demand > capacity:
+                        continue
+
+                    # try inserting cust at best position in r_to
+                    best_pos = None
+                    best_delta = 0.0
+                    for insert_idx in range(1, len(r_to.nodes)):
+                        prev = r_to.nodes[insert_idx - 1]
+                        nxt = r_to.nodes[insert_idx]
+                        delta = (
+                            prev.distance_to(cust)
+                            + cust.distance_to(nxt)
+                            - prev.distance_to(nxt)
+                        )
+                        if best_pos is None or delta < best_delta:
+                            best_pos = insert_idx
+                            best_delta = delta
+
+                    # cost change in r_from (remove cust)
+                    prev_f = r_from.nodes[customer_idx - 1]
+                    nxt_f = r_from.nodes[customer_idx + 1]
+                    delta_from = (
+                        prev_f.distance_to(nxt_f)
+                        - prev_f.distance_to(cust)
+                        - cust.distance_to(nxt_f)
+                    )
+
+                    if best_pos is not None and best_delta + delta_from < -1e-6:
+                        # perform relocate
+                        r_from.nodes.pop(customer_idx)
+                        r_to.nodes.insert(best_pos, cust)
+                        improved = True
+                        break
+                if improved:
+                    break
+            if improved:
+                break
+
+    return initial_solution

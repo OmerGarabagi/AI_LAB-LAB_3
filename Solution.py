@@ -5,6 +5,9 @@ import os
 import re
 import math
 from typing import Union, Optional
+import random
+import itertools
+from collections import deque
 
 import unittest
 
@@ -242,9 +245,18 @@ def main():
     for idx, r in enumerate(baseline.routes, 1):
         ids = [n.id for n in r.nodes]
         print(f" Route {idx}: {ids}  (load {r.load()})")
-    
-    # Optional: You can add your CVRP solving algorithm here
-    # solve_cvrp(coords, demands, cap, num_veh)
+
+    print("\n=== Multi‑Stage (Clarke‑Wright + Relocate) Solution ===")
+    ms_solution = multistage_clarke_wright(coords, demands, cap)
+    print(f"Total routes : {len(ms_solution.routes)}")
+    print(f"Total dist.  : {ms_solution.total_distance():.2f}")
+    for idx, r in enumerate(ms_solution.routes, 1):
+        ids = [n.id for n in r.nodes]
+        print(f" Route {idx}: {ids}  (load {r.load()})")
+
+    print("\n=== ILS‑Tabu (30 iterations) ===")
+    ils_sol = ils_tabu(coords, demands, cap, n_iters=30, seed=42)
+    print(f"Total dist. : {ils_sol.total_distance():.2f}")
 
 __all__ = [
     "Node",
@@ -256,7 +268,137 @@ __all__ = [
     "parse_cvrp",
     "greedy_nearest_neighbor",
     "ackley",
+    "multistage_clarke_wright",
+    "ils_tabu",
 ]
+# -------------------------------------------------
+# Iterated Local Search (ILS) with Tabu‑Search core
+# -------------------------------------------------
+def ils_tabu(
+    coords: list[tuple[float, float]],
+    demands: list[int],
+    capacity: int,
+    n_iters: int = 30,
+    tabu_tenure: int = 15,
+    ls_iters: int = 250,
+    seed: int | None = None,
+) -> Solution:
+    """
+    ILS framework:
+        • Initial solution: greedy_nearest_neighbor.
+        • repeat n_iters times:
+              1. Perturb best solution using a random INTER‑ROUTE swap.
+              2. Apply Tabu Search local search to the perturbed solution.
+              3. Accept if better than current best.
+    Perturbation promotes diversification; TS provides intensification.
+
+    Complexity:
+        – Each TS run explores O(ls_iters · n²) neighborhood checks in worst case
+          (we sample candidate SWAP moves only once per iteration).
+        – Overall ≈ O(n_iters · ls_iters · n²) but with modest constants.
+    """
+    rng = random.Random(seed)
+
+    # ---------- helpers ----------
+    def copy_solution(sol: Solution) -> Solution:
+        return Solution([Route(nodes=r.nodes[:]) for r in sol.routes])
+
+    def random_swap_between_routes(sol: Solution) -> bool:
+        customers = []
+        for r_idx, r in enumerate(sol.routes):
+            for n_idx, node in enumerate(r.nodes[1:-1], 1):
+                customers.append((r_idx, n_idx))
+        if len(customers) < 2:
+            return False
+        (r1, i1), (r2, i2) = rng.sample(customers, 2)
+        if r1 == r2:
+            return False
+        sol.routes[r1].nodes[i1], sol.routes[r2].nodes[i2] = (
+            sol.routes[r2].nodes[i2],
+            sol.routes[r1].nodes[i1],
+        )
+        return True
+
+    # ---------- Tabu Search core ----------
+    def tabu_search(start: Solution) -> Solution:
+        current = copy_solution(start)
+        best = copy_solution(current)
+        best_cost = best.total_distance()
+        tabu: deque[tuple[int, int]] = deque(maxlen=tabu_tenure)
+
+        for _ in range(ls_iters):
+            best_neighbor = None
+            best_move = None
+            best_delta = float("inf")
+
+            # collect customers indexes once
+            customers = []
+            for r_idx, r in enumerate(current.routes):
+                for n_idx, node in enumerate(r.nodes[1:-1], 1):
+                    customers.append((r_idx, n_idx, node))
+
+            for (r1, i1, n1), (r2, i2, n2) in itertools.combinations(
+                customers, 2
+            ):
+                if r1 == r2 or (n1.id, n2.id) in tabu:
+                    continue
+
+                # evaluate swap
+                delta = (
+                    _swap_delta(current.routes[r1], i1, n2, capacity)
+                    + _swap_delta(current.routes[r2], i2, n1, capacity)
+                )
+                if delta is None:
+                    continue  # infeasible capacity
+                if delta < best_delta:
+                    best_delta = delta
+                    best_neighbor = (r1, i1, r2, i2)
+                    best_move = (n1.id, n2.id)
+
+            if best_neighbor is None or best_delta >= -1e-6:
+                break  # no improving move
+
+            r1, i1, r2, i2 = best_neighbor
+            current.routes[r1].nodes[i1], current.routes[r2].nodes[i2] = (
+                current.routes[r2].nodes[i2],
+                current.routes[r1].nodes[i1],
+            )
+            tabu.append(best_move)
+
+            cur_cost = current.total_distance()
+            if cur_cost < best_cost:
+                best_cost = cur_cost
+                best = copy_solution(current)
+
+        return best
+
+    # Small helper to compute cost delta of swapping one node into a position
+    def _swap_delta(route: Route, idx: int, new_node: "Node", cap: int):
+        """Return cost delta or None if capacity violated."""
+        load_without = route.load() - route.nodes[idx].demand + new_node.demand
+        if load_without > cap:
+            return None
+        prev = route.nodes[idx - 1]
+        nxt = route.nodes[idx + 1]
+        old_node = route.nodes[idx]
+        old_cost = prev.distance_to(old_node) + old_node.distance_to(nxt)
+        new_cost = prev.distance_to(new_node) + new_node.distance_to(nxt)
+        return new_cost - old_cost
+
+    # ---------- ILS main ----------
+    best = greedy_nearest_neighbor(coords, demands, capacity)
+    best_cost = best.total_distance()
+
+    for _ in range(n_iters):
+        cand = copy_solution(best)
+        if not random_swap_between_routes(cand):
+            continue
+        improved = tabu_search(cand)
+        cost = improved.total_distance()
+        if cost < best_cost - 1e-6:
+            best, best_cost = improved, cost
+
+    return best
 
 
 # -------------------------------------------------
@@ -389,6 +531,134 @@ def greedy_nearest_neighbor(
         routes.append(Route(route_nodes))
 
     return Solution(routes)
+
+
+# -------------------------------------------------
+# Multi‑Stage Heuristic – Clarke‑Wright + Relocate
+# -------------------------------------------------
+def multistage_clarke_wright(
+    coords: list[tuple[float, float]],
+    demands: list[int],
+    capacity: int,
+) -> Solution:
+    n = len(coords)
+    nodes = [Node(i, *coords[i], demands[i]) for i in range(n)]
+    depot = nodes[0]
+
+    # --- Stage 1: Clarke–Wright parallel savings ---
+    # Start with one route per customer (depot‑i‑depot)
+    routes: dict[int, Route] = {
+        i: Route([depot, nodes[i], depot]) for i in range(1, n)
+    }
+
+    # Compute savings S_ij
+    savings = []
+    for i in range(1, n):
+        for j in range(i + 1, n):
+            s = (
+                depot.distance_to(nodes[i])
+                + depot.distance_to(nodes[j])
+                - nodes[i].distance_to(nodes[j])
+            )
+            savings.append((s, i, j))
+    savings.sort(reverse=True)  # descending
+
+    # Helper maps: which route a customer currently belongs to,
+    # whether customer is at start/end (needed for feasible merge).
+    route_of = {i: i for i in range(1, n)}
+
+    for s, i, j in savings:
+        ri_id = route_of[i]
+        rj_id = route_of[j]
+        if ri_id == rj_id:
+            continue  # already in same route
+
+        ri = routes[ri_id]
+        rj = routes[rj_id]
+
+        # We can only merge if i is at route end of ri and j at route start of rj
+        if (
+            ri.nodes[-2].id != i
+            or rj.nodes[1].id != j
+        ):
+            # try the opposite direction
+            if ri.nodes[1].id != i or rj.nodes[-2].id != j:
+                continue
+
+            # flip rj to have j at start
+            rj.nodes = [depot] + rj.nodes[1:-1][::-1] + [depot]
+
+        # Capacity check
+        if ri.load() + rj.load() > capacity:
+            continue
+
+        # Merge rj after ri (excluding duplicate depots)
+        merged_nodes = ri.nodes[:-1] + rj.nodes[1:]
+        new_route = Route(merged_nodes)
+
+        # Replace routes
+        new_id = ri_id
+        routes[new_id] = new_route
+        del routes[rj_id]
+
+        # Update mapping
+        for node in new_route.nodes[1:-1]:
+            route_of[node.id] = new_id
+
+    initial_solution = Solution(list(routes.values()))
+
+    # --- Stage 2: single‑pass relocate improvement ---
+    improved = True
+    while improved:
+        improved = False
+        for r_from in initial_solution.routes:
+            # skip depot only routes
+            if len(r_from.nodes) <= 3:
+                continue
+            for customer_idx in range(1, len(r_from.nodes) - 1):
+                cust = r_from.nodes[customer_idx]
+                for r_to in initial_solution.routes:
+                    if r_to is r_from:
+                        continue
+                    if r_to.load() + cust.demand > capacity:
+                        continue
+
+                    # try inserting cust at best position in r_to
+                    best_pos = None
+                    best_delta = 0.0
+                    for insert_idx in range(1, len(r_to.nodes)):
+                        prev = r_to.nodes[insert_idx - 1]
+                        nxt = r_to.nodes[insert_idx]
+                        delta = (
+                            prev.distance_to(cust)
+                            + cust.distance_to(nxt)
+                            - prev.distance_to(nxt)
+                        )
+                        if best_pos is None or delta < best_delta:
+                            best_pos = insert_idx
+                            best_delta = delta
+
+                    # cost change in r_from (remove cust)
+                    prev_f = r_from.nodes[customer_idx - 1]
+                    nxt_f = r_from.nodes[customer_idx + 1]
+                    delta_from = (
+                        prev_f.distance_to(nxt_f)
+                        - prev_f.distance_to(cust)
+                        - cust.distance_to(nxt_f)
+                    )
+
+                    if best_pos is not None and best_delta + delta_from < -1e-6:
+                        # perform relocate
+                        r_from.nodes.pop(customer_idx)
+                        r_to.nodes.insert(best_pos, cust)
+                        improved = True
+                        break
+                if improved:
+                    break
+            if improved:
+                break
+
+    return initial_solution
 
 
 # -------------------------------------------------
