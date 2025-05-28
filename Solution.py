@@ -3,6 +3,9 @@
 import sys
 import os
 import re
+from typing import Union, Optional
+
+import unittest
 
 
 # -------------------------------------------------
@@ -58,7 +61,7 @@ class Route:
     """A standalone route (helpful when vehicles are not explicitly modeled)."""
     __slots__ = ("nodes",)
 
-    def __init__(self, nodes: list[Node] | None = None):
+    def __init__(self, nodes: Optional[list[Node]] = None):
         self.nodes = nodes[:] if nodes else []
 
     def distance(self) -> float:
@@ -81,7 +84,7 @@ class Solution:
     """Collection of routes representing a complete CVRP solution."""
     __slots__ = ("routes",)
 
-    def __init__(self, routes: list[Route] | None = None):
+    def __init__(self, routes: Optional[list[Route]] = None):
         self.routes = routes[:] if routes else []
 
     def total_distance(self) -> float:
@@ -242,10 +245,12 @@ __all__ = [
     "solution_cost",
     "parse_cvrp",
 ]
-#
+
+
 # -------------------------------------------------
 # Cost utilities
 # -------------------------------------------------
+
 def route_cost(route: Route, capacity: int) -> float:
     """
     Return the distance of a route if it does not exceed capacity,
@@ -270,6 +275,65 @@ def solution_cost(solution: Solution, capacity: int) -> float:
     return total
 
 
+# -------------------------------------------------
+# Unit tests – run with:  python -m unittest Solution
+# -------------------------------------------------
+class TestCostAndCapacity(unittest.TestCase):
+    """Verify that cost utilities respect Euclidean distance and capacity."""
+
+    def setUp(self):
+        # simple coordinate system:
+        # depot (0,0), customer1 at (3,4) --> distance 5
+        # customer2 at (6,8)             --> distance 10 from depot
+        self.depot = Node(0, 0, 0, 0)
+        self.c1 = Node(1, 3, 4, 4)   # demand 4
+        self.c2 = Node(2, 6, 8, 5)   # demand 5
+        self.capacity_ok = 10
+        self.capacity_small = 8
+
+    # ---------- route_cost ----------
+
+    def test_route_cost_valid_distance(self):
+        """route_cost returns correct distance when within capacity."""
+        r = Route([self.depot, self.c1, self.c2, self.depot])
+        expected = (
+            self.depot.distance_to(self.c1)
+            + self.c1.distance_to(self.c2)
+            + self.c2.distance_to(self.depot)
+        )
+        self.assertAlmostEqual(route_cost(r, self.capacity_ok), expected, places=6)
+
+    def test_route_cost_capacity_violation(self):
+        """route_cost raises ValueError if load exceeds capacity."""
+        r = Route([self.depot, self.c1, self.c2, self.depot])  # load = 9
+        with self.assertRaises(ValueError):
+            route_cost(r, self.capacity_small)
+
+    # ---------- solution_cost ----------
+
+    def test_solution_cost_sum(self):
+        """solution_cost is the sum of route_cost over all routes."""
+        r1 = Route([self.depot, self.c1, self.depot])
+        r2 = Route([self.depot, self.c2, self.depot])
+        sol = Solution([r1, r2])
+
+        expected = route_cost(r1, self.capacity_ok) + route_cost(
+            r2, self.capacity_ok
+        )
+        self.assertAlmostEqual(solution_cost(sol, self.capacity_ok), expected, places=6)
+
+    def test_solution_cost_propagates_capacity_error(self):
+        """solution_cost propagates capacity violations from any route."""
+        heavy = Node(3, 1, 1, 20)
+        bad_route = Route([self.depot, heavy, self.depot])
+        sol = Solution([bad_route])
+        with self.assertRaises(ValueError):
+            solution_cost(sol, self.capacity_ok)
+
+    # (end TestCostAndCapacity)
+
+    # Optionally, more tests could be added here.
+
+
 if __name__ == "__main__":
-    main()
-    
+    unittest.main()
