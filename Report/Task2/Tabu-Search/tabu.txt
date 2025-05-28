@@ -1,0 +1,52 @@
+# ---------- Tabu Search core ----------
+    def tabu_search(start: Solution) -> Solution:
+        current = copy_solution(start)
+        best = copy_solution(current)
+        best_cost = best.total_distance()
+        tabu: deque[tuple[int, int]] = deque(maxlen=tabu_tenure)
+
+        for _ in range(ls_iters):
+            best_neighbor = None
+            best_move = None
+            best_delta = float("inf")
+
+            # collect customers indexes once
+            customers = []
+            for r_idx, r in enumerate(current.routes):
+                for n_idx, node in enumerate(r.nodes[1:-1], 1):
+                    customers.append((r_idx, n_idx, node))
+
+            for (r1, i1, n1), (r2, i2, n2) in itertools.combinations(
+                customers, 2
+            ):ß
+                if r1 == r2 or (n1.id, n2.id) in tabu:
+                    continue
+
+                # evaluate swap
+                delta = (
+                    _swap_delta(current.routes[r1], i1, n2, capacity)
+                    + _swap_delta(current.routes[r2], i2, n1, capacity)
+                )
+                if delta is None:
+                    continue  # infeasible capacity
+                if delta < best_delta:
+                    best_delta = delta
+                    best_neighbor = (r1, i1, r2, i2)
+                    best_move = (n1.id, n2.id)
+
+            if best_neighbor is None or best_delta >= -1e-6:
+                break  # no improving move
+
+            r1, i1, r2, i2 = best_neighbor
+            current.routes[r1].nodes[i1], current.routes[r2].nodes[i2] = (
+                current.routes[r2].nodes[i2],
+                current.routes[r1].nodes[i1],
+            )
+            tabu.append(best_move)
+
+            cur_cost = current.total_distance()
+            if cur_cost < best_cost:
+                best_cost = cur_cost
+                best = copy_solution(current)
+
+        return best

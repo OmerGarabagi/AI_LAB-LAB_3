@@ -1,0 +1,87 @@
+# -------------------------------------------------
+# Iterated Local Search with Ant Colony Optimization core
+# -------------------------------------------------
+def ils_aco(
+    coords: list[tuple[float, float]],
+    demands: list[int],
+    capacity: int,
+    n_iters: int = 10,
+    ants: int = 15,
+    aco_iters: int = 30,
+    alpha: float = 1.0,
+    beta: float = 2.0,
+    rho: float = 0.15,
+    seed: int | None = None,
+) -> Solution:
+    """
+    ILS‑ACO workflow:
+        1. Start with greedy_nearest_neighbor solution.
+        2. For n_iters cycles:
+            a. Perturb current best by random inter‑route swap.
+            b. Run a small Ant‑Colony Optimization search (ants × aco_iters)
+               starting from that perturbed pheromone matrix.
+            c. If ant best beats global best → accept.
+    Key ACO components:
+        • Pheromone matrix tau[i][j] initialised to 1.
+        • Heuristic value eta = 1 / distance.
+        • Transition probability ~ tau^alpha * eta^beta, restricted to
+          customers whose demand fits remaining capacity.
+        • Global pheromone evaporation  (1‑rho) and deposit 1/cost
+          on edges belonging to the iteration best ant.
+    Complexity:  O(n_iters · aco_iters · ants · n²)  (but small constants).
+
+    Returns: Best Solution found.
+    """
+    rng = random.Random(seed)
+    n = len(coords)
+
+    # Precompute distance and heuristic matrices
+    dist = [[0.0] * n for _ in range(n)]
+    heuristic = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        xi, yi = coords[i]
+        for j in range(n):
+            if i == j:
+                continue
+            xj, yj = coords[j]
+            d = math.hypot(xi - xj, yi - yj)
+            dist[i][j] = d
+            heuristic[i][j] = 1.0 / (d + 1e-9)
+
+    # Helper: construct a solution using current pheromone
+    def construct_ant(tau: list[list[float]]) -> Solution:
+        nodes = [Node(i, *coords[i], demands[i]) for i in range(n)]
+        depot = nodes[0]
+        unrouted = set(range(1, n))
+        routes = []
+        while unrouted:
+            load = 0
+            route_nodes = [depot]
+            current = 0  # depot index
+            while True:
+                feas = [j for j in unrouted if load + demands[j] <= capacity]
+                if not feas:
+                    break
+                probs = []
+                denom = 0.0
+                for j in feas:
+                    val = (tau[current][j] ** alpha) * (
+                        heuristic[current][j] ** beta
+                    )
+                    probs.append((j, val))
+                    denom += val
+                # roulette
+                r = rng.random() * denom
+                s = 0.0
+                for j, val in probs:
+                    s += val
+                    if s >= r:
+                        chosen = j
+                        break
+                route_nodes.append(nodes[chosen])
+                load += demands[chosen]
+                unrouted.remove(chosen)
+                current = chosen
+            route_nodes.append(depot)
+            routes.append(Route(route_nodes))
+        return Solution(routes)

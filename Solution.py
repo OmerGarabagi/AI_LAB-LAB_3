@@ -4,10 +4,10 @@ import sys
 import os
 import re
 import math
-from typing import Union, Optional
 import random
 import itertools
 from collections import deque
+from typing import Union, Optional
 
 import unittest
 
@@ -236,27 +236,30 @@ def main():
     print()
     print("=== Parsing Complete ===")
     print(f"Successfully parsed {n_vertices} vertices with total demand {sum(demands)}")
-    
-    # Demonstrate baseline heuristic
-    baseline = greedy_nearest_neighbor(coords, demands, cap)
-    print("=== Baseline Greedy Solution ===")
-    print(f"Total routes : {len(baseline.routes)}")
-    print(f"Total dist.  : {baseline.total_distance():.2f}")
-    for idx, r in enumerate(baseline.routes, 1):
-        ids = [n.id for n in r.nodes]
-        print(f" Route {idx}: {ids}  (load {r.load()})")
 
-    print("\n=== Multi‑Stage (Clarke‑Wright + Relocate) Solution ===")
-    ms_solution = multistage_clarke_wright(coords, demands, cap)
-    print(f"Total routes : {len(ms_solution.routes)}")
-    print(f"Total dist.  : {ms_solution.total_distance():.2f}")
-    for idx, r in enumerate(ms_solution.routes, 1):
-        ids = [n.id for n in r.nodes]
-        print(f" Route {idx}: {ids}  (load {r.load()})")
+    # --------------------------------------------------
+    # Run baseline and meta‑heuristic solvers
+    # --------------------------------------------------
+    print("\n=== Baseline Greedy (Nearest‑Neighbor) ===")
+    base_sol = greedy_nearest_neighbor(coords, demands, cap)
+    print(f"Routes: {len(base_sol.routes)}  |  Distance: {base_sol.total_distance():.2f}")
 
-    print("\n=== ILS‑Tabu (30 iterations) ===")
-    ils_sol = ils_tabu(coords, demands, cap, n_iters=30, seed=42)
-    print(f"Total dist. : {ils_sol.total_distance():.2f}")
+    print("\n=== Multi‑Stage (Clarke‑Wright + Relocate) ===")
+    ms_sol = multistage_clarke_wright(coords, demands, cap)
+    print(f"Routes: {len(ms_sol.routes)}  |  Distance: {ms_sol.total_distance():.2f}")
+
+    print("\n=== ILS – Tabu Search (30 iterations) ===")
+    tabu_sol = ils_tabu(coords, demands, cap, n_iters=30, seed=42)
+    print(f"Routes: {len(tabu_sol.routes)}  |  Distance: {tabu_sol.total_distance():.2f}")
+
+    print("\n=== ILS – Ant Colony Optimization (10 iterations) ===")
+    aco_sol = ils_aco(coords, demands, cap, n_iters=10, seed=7)
+    print(f"Routes: {len(aco_sol.routes)}  |  Distance: {aco_sol.total_distance():.2f}")
+
+    print("\n=== ILS – Simulated Annealing (20 iterations) ===")
+    sa_sol = ils_sa(coords, demands, cap, n_iters=20, seed=123)
+    print(f"Routes: {len(sa_sol.routes)}  |  Distance: {sa_sol.total_distance():.2f}")
+
 
 __all__ = [
     "Node",
@@ -270,7 +273,94 @@ __all__ = [
     "ackley",
     "multistage_clarke_wright",
     "ils_tabu",
+    "ils_aco",
+    "ils_sa",
 ]
+# -------------------------------------------------
+# Iterated Local Search with Simulated‑Annealing core
+# -------------------------------------------------
+def ils_sa(
+    coords: list[tuple[float, float]],
+    demands: list[int],
+    capacity: int,
+    n_iters: int = 20,
+    inner_moves: int = 150,
+    T0: float = 100.0,
+    alpha: float = 0.90,
+    seed: Optional[int] = None,
+) -> Solution:
+    """
+    ILS‑SA workflow:
+        1. Initial solution = greedy_nearest_neighbor.
+        2. Repeat n_iters times:
+             a. Perturb best solution by random customer swap.
+             b. Run Simulated Annealing local search with geometric cooling.
+             c. Accept if improved.
+    SA specifics:
+        • Neighborhood = single inter‑route swap.
+        • Acceptance: always if Δ<0 else prob = exp(‑Δ/T).
+        • Temperature schedule: T <- alpha*T after each accepted move
+          (reset to T0 for every outer iteration).
+    Complexity: O(n_iters · inner_moves · n²) (swap eval is O(1)).
+    """
+    rng = random.Random(seed)
+
+    # ---- helper copies & swap ----
+    def copy_solution(sol: Solution) -> Solution:
+        return Solution([Route(nodes=r.nodes[:]) for r in sol.routes])
+
+    def random_inter_swap(sol: Solution):
+        cust = []
+        for r_idx, r in enumerate(sol.routes):
+            for n_idx in range(1, len(r.nodes) - 1):
+                cust.append((r_idx, n_idx))
+        if len(cust) < 2:
+            return False
+        (r1, i1), (r2, i2) = rng.sample(cust, 2)
+        if r1 == r2:
+            return False
+        sol.routes[r1].nodes[i1], sol.routes[r2].nodes[i2] = (
+            sol.routes[r2].nodes[i2],
+            sol.routes[r1].nodes[i1],
+        )
+        return True
+
+    def feasible(sol: Solution) -> bool:
+        return all(r.load() <= capacity for r in sol.routes)
+
+    # ---- SA local search ----
+    def sa_search(start: Solution) -> Solution:
+        cur = copy_solution(start)
+        best = copy_solution(cur)
+        cur_cost = best_cost = cur.total_distance()
+        T = T0
+        for _ in range(inner_moves):
+            neigh = copy_solution(cur)
+            if not random_inter_swap(neigh) or not feasible(neigh):
+                continue
+            delta = neigh.total_distance() - cur_cost
+            if delta < 0 or rng.random() < math.exp(-delta / T):
+                cur, cur_cost = neigh, neigh.total_distance()
+                T *= alpha
+                if cur_cost < best_cost:
+                    best, best_cost = cur, cur_cost
+        return best
+
+    # ---- ILS main ----
+    best = greedy_nearest_neighbor(coords, demands, capacity)
+    best_cost = best.total_distance()
+
+    for _ in range(n_iters):
+        candidate = copy_solution(best)
+        random_inter_swap(candidate)
+        if not feasible(candidate):
+            continue
+        improved = sa_search(candidate)
+        cost = improved.total_distance()
+        if cost < best_cost - 1e-6:
+            best, best_cost = improved, cost
+
+    return best
 # -------------------------------------------------
 # Iterated Local Search (ILS) with Tabu‑Search core
 # -------------------------------------------------
@@ -281,7 +371,7 @@ def ils_tabu(
     n_iters: int = 30,
     tabu_tenure: int = 15,
     ls_iters: int = 250,
-    seed: int | None = None,
+    seed: Optional[int] = None,
 ) -> Solution:
     """
     ILS framework:
@@ -402,10 +492,167 @@ def ils_tabu(
 
 
 # -------------------------------------------------
+# Iterated Local Search with Ant Colony Optimization core
+# -------------------------------------------------
+def ils_aco(
+    coords: list[tuple[float, float]],
+    demands: list[int],
+    capacity: int,
+    n_iters: int = 10,
+    ants: int = 15,
+    aco_iters: int = 30,
+    alpha: float = 1.0,
+    beta: float = 2.0,
+    rho: float = 0.15,
+    seed: Optional[int] = None,
+) -> Solution:
+    """
+    ILS‑ACO workflow:
+        1. Start with greedy_nearest_neighbor solution.
+        2. For n_iters cycles:
+            a. Perturb current best by random inter‑route swap.
+            b. Run a small Ant‑Colony Optimization search (ants × aco_iters)
+               starting from that perturbed pheromone matrix.
+            c. If ant best beats global best → accept.
+    Key ACO components:
+        • Pheromone matrix tau[i][j] initialised to 1.
+        • Heuristic value eta = 1 / distance.
+        • Transition probability ~ tau^alpha * eta^beta, restricted to
+          customers whose demand fits remaining capacity.
+        • Global pheromone evaporation  (1‑rho) and deposit 1/cost
+          on edges belonging to the iteration best ant.
+    Complexity:  O(n_iters · aco_iters · ants · n²)  (but small constants).
+
+    Returns: Best Solution found.
+    """
+    rng = random.Random(seed)
+    n = len(coords)
+
+    # Precompute distance and heuristic matrices
+    dist = [[0.0] * n for _ in range(n)]
+    heuristic = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        xi, yi = coords[i]
+        for j in range(n):
+            if i == j:
+                continue
+            xj, yj = coords[j]
+            d = math.hypot(xi - xj, yi - yj)
+            dist[i][j] = d
+            heuristic[i][j] = 1.0 / (d + 1e-9)
+
+    # Helper: construct a solution using current pheromone
+    def construct_ant(tau: list[list[float]]) -> Solution:
+        nodes = [Node(i, *coords[i], demands[i]) for i in range(n)]
+        depot = nodes[0]
+        unrouted = set(range(1, n))
+        routes = []
+        while unrouted:
+            load = 0
+            route_nodes = [depot]
+            current = 0  # depot index
+            while True:
+                feas = [j for j in unrouted if load + demands[j] <= capacity]
+                if not feas:
+                    break
+                probs = []
+                denom = 0.0
+                for j in feas:
+                    val = (tau[current][j] ** alpha) * (
+                        heuristic[current][j] ** beta
+                    )
+                    probs.append((j, val))
+                    denom += val
+                # roulette
+                r = rng.random() * denom
+                s = 0.0
+                for j, val in probs:
+                    s += val
+                    if s >= r:
+                        chosen = j
+                        break
+                route_nodes.append(nodes[chosen])
+                load += demands[chosen]
+                unrouted.remove(chosen)
+                current = chosen
+            route_nodes.append(depot)
+            routes.append(Route(route_nodes))
+        return Solution(routes)
+
+    # Tabu‑swap perturbation for diversification
+    def perturb_solution(sol: Solution):
+        customers = []
+        for r_idx, r in enumerate(sol.routes):
+            for n_idx, _ in enumerate(r.nodes[1:-1], 1):
+                customers.append((r_idx, n_idx))
+        if len(customers) < 2:
+            return
+        (r1, i1), (r2, i2) = rng.sample(customers, 2)
+        if r1 == r2:
+            return
+        sol.routes[r1].nodes[i1], sol.routes[r2].nodes[i2] = (
+            sol.routes[r2].nodes[i2],
+            sol.routes[r1].nodes[i1],
+        )
+
+    # ---------- ILS main ----------
+    best = greedy_nearest_neighbor(coords, demands, capacity)
+    best_cost = best.total_distance()
+
+    for _ in range(n_iters):
+        # perturb
+        current = Solution([Route(nodes=r.nodes[:]) for r in best.routes])
+        perturb_solution(current)
+
+        # init pheromone matrix
+        tau = [[1.0 for _ in range(n)] for _ in range(n)]
+
+        # optional: seed pheromone with current solution edges
+        for r in current.routes:
+            for k in range(len(r.nodes) - 1):
+                i = r.nodes[k].id
+                j = r.nodes[k + 1].id
+                tau[i][j] += 1.0
+
+        # ACO loop
+        best_ant = current
+        best_ant_cost = current.total_distance()
+
+        for _iter in range(aco_iters):
+            # evaporation
+            for i in range(n):
+                for j in range(n):
+                    tau[i][j] *= (1 - rho)
+                    if tau[i][j] < 1e-6:
+                        tau[i][j] = 1e-6
+
+            # construct ants
+            for _a in range(ants):
+                ant_sol = construct_ant(tau)
+                cost = ant_sol.total_distance()
+                if cost < best_ant_cost:
+                    best_ant = ant_sol
+                    best_ant_cost = cost
+
+            # deposit pheromone using iteration best ant
+            for r in best_ant.routes:
+                for k in range(len(r.nodes) - 1):
+                    i = r.nodes[k].id
+                    j = r.nodes[k + 1].id
+                    tau[i][j] += 1.0 / best_ant_cost
+
+        # acceptance
+        if best_ant_cost < best_cost - 1e-6:
+            best, best_cost = best_ant, best_ant_cost
+
+    return best
+
+
+# -------------------------------------------------
 # Ackley benchmark function (d‑dimensional)
 # -------------------------------------------------
 def ackley(
-    x: list[float] | tuple[float, ...],
+    x: Union[list[float], tuple[float, ...]],
     a: float = 20.0,
     b: float = 0.2,
     c: float = 2 * math.pi,
@@ -722,7 +969,13 @@ class TestCostAndCapacity(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    main()
+    # Check if we should run tests or the main VRP parser
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        # Run unit tests
+        unittest.main(argv=[''], exit=False)
+    else:
+        # Run the VRP parser
+        main()
+        
     # Quick Ackley test (d=10)
-    zero_vec = [0.0] * 10
-    print("\nAckley(0-vector) =", ackley(zero_vec))
+    print("\nAckley(0-vector) =", ackley([0.0] * 10))

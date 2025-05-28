@@ -1,0 +1,14 @@
+    # ---------- ILS main ----------
+    best = greedy_nearest_neighbor(coords, demands, capacity)
+    best_cost = best.total_distance()
+
+    for _ in range(n_iters):
+        cand = copy_solution(best)
+        if not random_swap_between_routes(cand):
+            continue
+        improved = tabu_search(cand)
+        cost = improved.total_distance()
+        if cost < best_cost - 1e-6:
+            best, best_cost = improved, cost
+
+    return best
