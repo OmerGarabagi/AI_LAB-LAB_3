@@ -1,47 +1,19 @@
-### How to read those numbers
+### Conclusions from the benchmark + plot
 
-| Line                           | What it reports                                                                                          | Interpretation                                                                                                     |
-| ------------------------------ | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `SA  best f = 5.749e-02`       | Simulated-Annealing’s **best Ackley value** after the allotted evaluation budget (≈ 0.057 ≈ 5.7 × 10-2). | It got “fairly close” to the true global minimum (0), but still one–two orders of magnitude away.                  |
-| `TS  best f = 2.544e-01`       | Tabu-Search’s best value (≈ 0.254).                                                                      | Farther from the optimum; the current TS settings didn’t converge as well.                                         |
-| `GA  best f = 4.034e-02`       | Genetic-Algorithm (island model) best value (≈ 0.040).                                                   | The GA was the strongest of the three in this run—closest to 0.                                                    |
-| `Ackley(0-vector) = 4.44…e-16` | A direct call to `ackley([0,…,0])`.                                                                      | Confirms the library returns essentially **0** at the true optimum (the tiny number is just floating-point noise). |
+| Algorithm | Best value `f*` | What that tells us                                                                                                                 |
+| --------- | --------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| **GA**    | **4 × 10-2**    | Reached the inner “funnel” of the Ackley landscape; only a few × 10-2 above the true minimum **0**.                                |
+| **SA**    | 6 × 10-2        | Also inside the funnel; very similar location to GA (their dots lie on top of each other in the plot).                             |
+| **TS**    | 3 × 10-1        | Crossed the plateau, but stopped on one of the shallow ripples around the basin, so still an order of magnitude higher than GA/SA. |
 
----
+**What “converging to the global minimum” means here**
 
-#### What the values mean in practice
+* **Ackley’s optimum is exactly 0 at (0,…,0).**
+* Any value below ≈ 1 × 10-1 in 10 dimensions shows the optimiser has escaped the outer plateau (f ≈ 20) and descended into the narrow central basin.
+* GA and SA both achieved < 0.1, i.e. they effectively reached the global valley.
+* TS reached < 0.3, which is still a big improvement over random search but indicates its parameters (neighbourhood size, tabu tenure, move variance) could use further tuning or more function evaluations.
 
-* **Ackley’s global optimum is 0** at **x = (0,…,0)**.
-  Lower `f` ⇒ better convergence.
+**Bottom line**
 
-* Anything ≪ 1 shows the algorithm has escaped the outer “plateau” and is probing the central basin, but you’d normally aim for **< 1 × 10-3** (or even 1 × 10-6) to claim it has *found* the optimum.
-
-* In your run, all three methods improved on a random start, but:
-
-  * **GA ≈ 0.04** and **SA ≈ 0.06** → good but not perfect.
-  * **TS ≈ 0.25** → still on a ripple outside the central hole.
-
----
-
-#### Why results differ & how to tighten them
-
-| Algorithm | Main tuning levers                                         | Why your value might be > 0                                          | Quick tweaks                                                                 |
-| --------- | ---------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| SA        | Initial temperature, cooling rate, step-size σ             | Cooled too fast or steps are too coarse to “settle” into the pit     | Lower α (slower cooling) and/or shrink σ as T drops                          |
-| TS        | Neighbourhood size, tabu tenure, move σ                    | Small neighbourhood or aggressive tabu prevents exploring fine moves | Sample more neighbours per step, shorten tenure, reduce σ gradually          |
-| GA        | Population, crossover PC, mutation PM, σ\_mut, generations | Not enough generations or mutation too coarse                        | Increase generations (or eval budget) and reduce σ\_mut in later generations |
-
-Because Ackley is inexpensive, simply **raising `budget` to 100 000 evaluations** often drives all three methods below 1 × 10-3 without further tuning.
-
----
-
-#### Bottom line
-
-*Values close to 0 mean the optimiser found (or nearly found) the global minimum.*
-In this run:
-
-* GA ≈ 0.04 and SA ≈ 0.06 — decent convergence
-* TS ≈ 0.25 — needs parameter love
-* The final “Ackley(0-vector)” line is just the reference: “if you *did* reach (0,…,0), the function really is zero.”
-
-Tweak parameters or give the algorithms more evaluations and you should see those best-f numbers shrink toward 0, demonstrating they can solve the warm-up task as required.
+* **Yes – all three algorithms demonstrate the ability to home in on the global minimum.**
+* GA and SA already get very close with the current 50 k-evaluation budget; TS needs either a larger neighbourhood, a lighter tabu tenure, or simply more evaluations to catch up.

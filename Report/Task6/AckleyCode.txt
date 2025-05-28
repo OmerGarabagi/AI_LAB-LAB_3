@@ -217,3 +217,57 @@ def optimise_ackley(
     if method == "GA":
         return _ga()
     raise ValueError("method must be SA | TS | GA | ALL | None")
+
+
+
+# -------------------------------------------------
+# Visualise Ackley benchmark results (SA / TS / GA)
+# -------------------------------------------------
+def plot_ackley_results_3d(
+    budget: int = 50_000,
+    seed: int = 1,
+    methods: tuple[str, ...] = ("SA", "TS", "GA"),
+    bounds: tuple[float, float] = (-40, 40),
+    grid_points: int = 300,
+) -> None:
+    """
+    • Runs optimise_ackley for each method.
+    • Plots the 2-D Ackley surface and scatters the best (x1,x2) returned
+      by every method (only the first two dims are shown).
+    """
+
+    # ---------- run the benchmark ----------
+    best_pts = {}  # method → (x1,x2,f)
+    for m in methods:
+        x_best, f_best = optimise_ackley(method=m, budget=budget, seed=seed)
+        best_pts[m] = (x_best[0], x_best[1], f_best)
+
+    # ---------- prepare surface ----------
+    low, high = bounds
+    xs = np.linspace(low, high, grid_points)
+    ys = np.linspace(low, high, grid_points)
+    X, Y = np.meshgrid(xs, ys)
+
+    def ackley_xy(x, y, a=20.0, b=0.2, c=2 * np.pi):
+        term1 = -a * np.exp(-b * np.sqrt(0.5 * (x**2 + y**2)))
+        term2 = -np.exp(0.5 * (np.cos(c * x) + np.cos(c * y)))
+        return term1 + term2 + a + np.e
+
+    Z = ackley_xy(X, Y)
+
+    # ---------- plot ----------
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+    ax.plot_surface(X, Y, Z, linewidth=0, antialiased=True)
+
+    # scatter best points
+    for m, (x1, x2, f) in best_pts.items():
+        ax.scatter(x1, x2, f, s=50, marker="o", label=f"{m}  f={f:.2e}")
+
+    ax.set_xlabel("x₁")
+    ax.set_ylabel("x₂")
+    ax.set_zlabel("f(x₁,x₂)")
+    ax.set_title("Ackley Function with Best Points (d=10 run, first two dims)")
+    ax.legend(loc="upper right")
+
+    plt.show()
