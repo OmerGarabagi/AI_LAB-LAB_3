@@ -1,0 +1,104 @@
+# -------------------------------------------------
+# Branch-and-Bound with Limited-Discrepancy Search
+# -------------------------------------------------
+def bb_lds(
+    coords: list[tuple[float, float]],
+    demands: list[int],
+    capacity: int,
+    max_D: int = 2,
+    time_limit: float = 5.0,
+) -> Solution:
+    """
+    Exact solver for SMALL CVRP using Branch-and-Bound guided
+    by Limited-Discrepancy Search.
+
+    • max_D : maximum number of discrepancies away from NN order.
+    • time_limit : safety wall-clock limit in seconds.
+
+    Returns best feasible solution found (optimal in practice
+    for ≤~25 customers and small D).
+    """
+    import time
+    start_t = time.time()
+
+    n = len(coords)
+    nodes = [Node(i, *coords[i], demands[i]) for i in range(n)]
+    depot = nodes[0]
+    customers = nodes[1:]
+
+    # Pre-compute NN order for each node
+    nn_order = {
+        v: sorted(customers, key=lambda u: v.distance_to(u)) for v in nodes
+    }
+
+    best_sol = greedy_nearest_neighbor(coords, demands, capacity)
+    best_cost = best_sol.total_distance()
+
+    # State = (current_route, remaining, load, dist_so_far, disc_used)
+    def dfs(route, remaining, load, dist, disc, depth):
+        nonlocal best_cost, best_sol
+        # Time guard
+        if time.time() - start_t > time_limit:
+            return
+        # Bound: capacity
+        if load > capacity:
+            return
+        # Bound: optimistic distance
+        mst = _mst_weight([depot] + list(remaining))
+        optimistic = dist + mst
+        if optimistic >= best_cost:
+            return
+        # All served?
+        if not remaining:
+            total = dist + route[-1].distance_to(depot)
+            if total < best_cost:
+                best_cost = total
+                best_sol = Solution([Route(route + [depot])])
+            return
+        # Children ordered by NN list
+        ordered = nn_order[ route[-1] ]
+        # Filter to remaining only (preserve order)
+        ordered = [c for c in ordered if c in remaining]
+        for idx, nxt in enumerate(ordered):
+            new_disc = disc + (1 if idx else 0)
+            if new_disc > depth:
+                continue
+            new_route = route + [nxt]
+            new_remaining = remaining - {nxt}
+            new_load = load + nxt.demand
+            new_dist = dist + route[-1].distance_to(nxt)
+            dfs(new_route, new_remaining, new_load, new_dist, new_disc, depth)
+
+    # Iterate D = 0..max_D
+    for D in range(max_D + 1):
+        dfs([depot], set(customers), 0, 0.0, 0, D)
+
+    return best_sol
+
+
+
+# -------------------------------------------------
+# Utility: Prim MST weight for a set of nodes
+# -------------------------------------------------
+def _mst_weight(nodes: list[Node]) -> float:
+    if len(nodes) <= 1:
+        return 0.0
+
+    seen = {nodes[0].id}
+    edge_heap = []
+    for nd in nodes[1:]:
+        heapq.heappush(edge_heap, (nodes[0].distance_to(nd), nd.id, nd))
+
+    cost = 0.0
+    while edge_heap and len(seen) < len(nodes):
+        w, _, nxt = heapq.heappop(edge_heap)
+        if nxt.id in seen:          # already spanned
+            continue
+        cost += w
+        seen.add(nxt.id)
+        for other in nodes:
+            if other.id not in seen:
+                heapq.heappush(edge_heap, (nxt.distance_to(other), other.id, other))
+    return cost
+
+

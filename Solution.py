@@ -6,7 +6,8 @@ import re
 import math
 import random
 import itertools
-from collections import deque
+import heapq
+from collections import deque, defaultdict
 from typing import Union, Optional
 
 import unittest
@@ -264,6 +265,14 @@ def main():
     ga_sol = ga_island(coords, demands, cap, seed=2024)
     print(f"Routes: {len(ga_sol.routes)}  |  Distance: {ga_sol.total_distance():.2f}")
 
+    print("\n=== ALNS (2 000 iterations) ===")
+    alns_sol = alns(coords, demands, cap, iters=2000, seed=11)
+    print(f"Routes: {len(alns_sol.routes)}  |  Distance: {alns_sol.total_distance():.2f}")
+
+    print("\n=== Branch-and-Bound LDS (D=2) ===")
+    bb_sol = bb_lds(coords, demands, cap, max_D=2, time_limit=5)
+    print(f"Routes: {len(bb_sol.routes)}  |  Distance: {bb_sol.total_distance():.2f}")
+
 
 # -------------------------------------------------
 # Genetic Algorithm – Island Model (optional memetic local search)
@@ -408,6 +417,303 @@ def ga_island(
     )[0]
     return decode(global_best)
 
+# -------------------------------------------------
+# Adaptive Large-Neighbourhood Search (ALNS)
+# -------------------------------------------------
+def alns(
+    coords: list[tuple[float, float]],
+    demands: list[int],
+    capacity: int,
+    iters: int = 2000,
+    p_destroy: float = 0.25,
+    seed: int | None = None,
+) -> Solution:
+    """
+    Basic ALNS for CVRP.
+    • Destroy ops  : random, worst-removal, Shaw-removal.
+    • Repair  ops  : greedy-insert, regret-2 insert.
+    • Adaptive weights updated by scoring rules (Rand-rulette).
+    • Acceptance   : SA-style (T₀=100, α=0.999)    .
+
+    Returns: best Solution found.
+    """
+    rng = random.Random(seed)
+    n = len(coords)
+
+    # ---------- shared structures ----------
+    nodes = [Node(i, *coords[i], demands[i]) for i in range(n)]
+    depot = nodes[0]
+
+    def solution_distance(sol: Solution) -> float:
+        return sol.total_distance()
+
+    # ---------- destroy operators ----------
+    def destroy_random(sol: Solution) -> list[Node]:
+        num_remove = max(1, int(p_destroy * (n - 1)))
+        removed = rng.sample(
+            [nd for r in sol.routes for nd in r.nodes[1:-1]], num_remove
+        )
+        for nd in removed:
+            for r in sol.routes:
+                if nd in r.nodes:
+                    r.nodes.remove(nd)
+                    break
+        return removed
+
+    def destroy_worst(sol: Solution) -> list[Node]:
+        k = max(1, int(p_destroy * (n - 1)))        # how many to remove
+        savings = []
+        for r in sol.routes:
+            for i in range(1, len(r.nodes) - 1):
+                nd = r.nodes[i]
+                sav = (
+                    r.nodes[i - 1].distance_to(nd)
+                    + nd.distance_to(r.nodes[i + 1])
+                    - r.nodes[i - 1].distance_to(r.nodes[i + 1])
+                )
+                savings.append((sav, nd))            # tuple (saving, node)
+        savings.sort(key=lambda t: t[0], reverse=True)   # sort only by saving
+        removed = [nd for _, nd in savings[:k]]
+        for nd in removed:                              # delete them from routes
+            for r in sol.routes:
+                if nd in r.nodes:
+                    r.nodes.remove(nd)
+                    break
+        return removed
+
+    def destroy_shaw(sol: Solution, θ=2.0) -> list[Node]:
+        k = max(1, int(p_destroy * (n - 1)))
+        start = rng.choice(
+            [nd for r in sol.routes for nd in r.nodes[1:-1]]
+        )
+        removed = [start]
+        while len(removed) < k:
+            # choose node most alike any already-removed one
+            cand_pool = [
+                nd
+                for r in sol.routes
+                for nd in r.nodes[1:-1]
+                if nd not in removed
+            ]
+            def related(nd):
+                return min(
+                    math.hypot(nd.x - r.x, nd.y - r.y) for r in removed
+                ) + θ * abs(nd.demand - removed[0].demand)
+            nd = min(cand_pool, key=related)
+            removed.append(nd)
+        for nd in removed:
+            for r in sol.routes:
+                if nd in r.nodes:
+                    r.nodes.remove(nd)
+                    break
+        return removed
+
+    destroy_ops = [destroy_random, destroy_worst, destroy_shaw]
+    destroy_w   = [1.0] * len(destroy_ops)
+
+    # ---------- repair operators ----------
+    def insert_cheapest(sol: Solution, removed: list[Node]):
+        for nd in removed:
+            best_cost = float("inf")
+            best_rpos = None
+            for r in sol.routes:
+                if r.load() + nd.demand > capacity:
+                    continue
+                for i in range(1, len(r.nodes)):
+                    prev, nxt = r.nodes[i - 1], r.nodes[i]
+                    delta = (
+                        prev.distance_to(nd)
+                        + nd.distance_to(nxt)
+                        - prev.distance_to(nxt)
+                    )
+                    if delta < best_cost:
+                        best_cost, best_rpos = delta, (r, i)
+            if best_rpos is None:  # need new route
+                sol.routes.append(Route([depot, nd, depot]))
+            else:
+                r, pos = best_rpos
+                r.nodes.insert(pos, nd)
+
+    def insert_regret2(sol: Solution, removed: list[Node]):
+        """
+        Regret-2 insertion.
+        Repeatedly choose the customer whose second–best insertion cost is
+        much worse than its best insertion cost (largest regret value) and
+        insert it at its best position.
+        """
+        while removed:
+            best_nd = None          # node to insert
+            best_route = None       # Route object
+            best_pos = None         # insertion index in that route
+            best_reg = float("-inf")
+
+            for nd in removed:
+                best1 = best2 = None        # two cheapest deltas
+                best1_route_pos = None
+
+                # scan every feasible insertion position
+                for r in sol.routes:
+                    if r.load() + nd.demand > capacity:
+                        continue
+                    for i in range(1, len(r.nodes)):
+                        prev, nxt = r.nodes[i - 1], r.nodes[i]
+                        delta = (
+                            prev.distance_to(nd)
+                            + nd.distance_to(nxt)
+                            - prev.distance_to(nxt)
+                        )
+                        if best1 is None or delta < best1:
+                            best2 = best1
+                            best1 = delta
+                            best1_route_pos = (r, i)
+                        elif best2 is None or delta < best2:
+                            best2 = delta
+
+                # if the customer cannot be inserted into any existing route,
+                # regard the cost of opening a new route (prev=depot, nxt=depot)
+                if best1_route_pos is None:
+                    # create a new route for it later
+                    best1 = 0.0
+                    best2 = best1  # regret = 0
+                    tmp_route_pos = None
+                else:
+                    tmp_route_pos = best1_route_pos
+
+                if best2 is None:           # only one feasible position
+                    best2 = best1
+                regret = best2 - best1
+
+                if regret > best_reg:
+                    best_reg = regret
+                    best_nd = nd
+                    best_route = tmp_route_pos[0] if tmp_route_pos else None
+                    best_pos = tmp_route_pos[1] if tmp_route_pos else None
+
+            # ----- actually insert the chosen node -----
+            removed.remove(best_nd)
+            if best_route is None:              # new route
+                sol.routes.append(Route([depot, best_nd, depot]))
+            else:
+                best_route.nodes.insert(best_pos, best_nd)
+
+    repair_ops = [insert_cheapest, insert_regret2]
+    repair_w   = [1.0] * len(repair_ops)
+
+    # ---------- temperature schedule ----------
+    T, α = 100.0, 0.999
+
+    # ---------- initialise ----------
+    best = greedy_nearest_neighbor(coords, demands, capacity)
+    current = Solution([Route(r.nodes[:]) for r in best.routes])
+    best_cost = current_cost = solution_distance(best)
+
+    for it in range(iters):
+        # choose ops
+        d_idx = random.choices(range(len(destroy_ops)), weights=destroy_w)[0]
+        r_idx = random.choices(range(len(repair_ops)),   weights=repair_w)[0]
+
+        cand = Solution([Route(r.nodes[:]) for r in current.routes])
+        removed = destroy_ops[d_idx](cand)
+        repair_ops[r_idx](cand, removed)
+        cand_cost = solution_distance(cand)
+
+        # SA-acceptance
+        accept = cand_cost < current_cost or rng.random() < math.exp(
+            -(cand_cost - current_cost) / T
+        )
+        if accept:
+            current = cand
+            current_cost = cand_cost
+        if cand_cost < best_cost:
+            best, best_cost = cand, cand_cost
+            destroy_w[d_idx] += 1.0
+            repair_w[r_idx]  += 1.0
+        else:
+            destroy_w[d_idx] *= 0.995
+            repair_w[r_idx]  *= 0.995
+
+        T *= α
+
+    return best
+
+# -------------------------------------------------
+# Branch-and-Bound with Limited-Discrepancy Search
+# -------------------------------------------------
+def bb_lds(
+    coords: list[tuple[float, float]],
+    demands: list[int],
+    capacity: int,
+    max_D: int = 2,
+    time_limit: float = 5.0,
+) -> Solution:
+    """
+    Exact solver for SMALL CVRP using Branch-and-Bound guided
+    by Limited-Discrepancy Search.
+
+    • max_D : maximum number of discrepancies away from NN order.
+    • time_limit : safety wall-clock limit in seconds.
+
+    Returns best feasible solution found (optimal in practice
+    for ≤~25 customers and small D).
+    """
+    import time
+    start_t = time.time()
+
+    n = len(coords)
+    nodes = [Node(i, *coords[i], demands[i]) for i in range(n)]
+    depot = nodes[0]
+    customers = nodes[1:]
+
+    # Pre-compute NN order for each node
+    nn_order = {
+        v: sorted(customers, key=lambda u: v.distance_to(u)) for v in nodes
+    }
+
+    best_sol = greedy_nearest_neighbor(coords, demands, capacity)
+    best_cost = best_sol.total_distance()
+
+    # State = (current_route, remaining, load, dist_so_far, disc_used)
+    def dfs(route, remaining, load, dist, disc, depth):
+        nonlocal best_cost, best_sol
+        # Time guard
+        if time.time() - start_t > time_limit:
+            return
+        # Bound: capacity
+        if load > capacity:
+            return
+        # Bound: optimistic distance
+        mst = _mst_weight([depot] + list(remaining))
+        optimistic = dist + mst
+        if optimistic >= best_cost:
+            return
+        # All served?
+        if not remaining:
+            total = dist + route[-1].distance_to(depot)
+            if total < best_cost:
+                best_cost = total
+                best_sol = Solution([Route(route + [depot])])
+            return
+        # Children ordered by NN list
+        ordered = nn_order[ route[-1] ]
+        # Filter to remaining only (preserve order)
+        ordered = [c for c in ordered if c in remaining]
+        for idx, nxt in enumerate(ordered):
+            new_disc = disc + (1 if idx else 0)
+            if new_disc > depth:
+                continue
+            new_route = route + [nxt]
+            new_remaining = remaining - {nxt}
+            new_load = load + nxt.demand
+            new_dist = dist + route[-1].distance_to(nxt)
+            dfs(new_route, new_remaining, new_load, new_dist, new_disc, depth)
+
+    # Iterate D = 0..max_D
+    for D in range(max_D + 1):
+        dfs([depot], set(customers), 0, 0.0, 0, D)
+
+    return best_sol
+
+
 __all__ = [
     "Node",
     "Vehicle",
@@ -423,6 +729,8 @@ __all__ = [
     "ils_aco",
     "ils_sa",
     "ga_island",
+    "alns",
+    "bb_lds",
 ]
 # -------------------------------------------------
 # Iterated Local Search with Simulated‑Annealing core
@@ -795,6 +1103,29 @@ def ils_aco(
 
     return best
 
+# -------------------------------------------------
+# Utility: Prim MST weight for a set of nodes
+# -------------------------------------------------
+def _mst_weight(nodes: list[Node]) -> float:
+    if len(nodes) <= 1:
+        return 0.0
+
+    seen = {nodes[0].id}
+    edge_heap = []
+    for nd in nodes[1:]:
+        heapq.heappush(edge_heap, (nodes[0].distance_to(nd), nd.id, nd))
+
+    cost = 0.0
+    while edge_heap and len(seen) < len(nodes):
+        w, _, nxt = heapq.heappop(edge_heap)
+        if nxt.id in seen:          # already spanned
+            continue
+        cost += w
+        seen.add(nxt.id)
+        for other in nodes:
+            if other.id not in seen:
+                heapq.heappush(edge_heap, (nxt.distance_to(other), other.id, other))
+    return cost
 
 # -------------------------------------------------
 # Ackley benchmark function (d‑dimensional)

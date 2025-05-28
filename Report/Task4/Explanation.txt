@@ -1,0 +1,104 @@
+### How the ALNS Heuristic Works (Conceptual Walk-Through)
+
+Adaptive Large-Neighborhood Search is basically a **“destroy–repair” meta-heuristic** that keeps one current solution and repeatedly:
+
+1. **Blows up** part of that solution to create a large neighborhood
+2. **Repairs** the partial solution in a smart way
+3. **Adapts** itself on-the-fly to favour the destroy/repair operators that actually help
+
+Below is what each stage does in the version you’re running.
+
+---
+
+#### 1  Initialisation
+
+* **Start solution** – we reuse the fast **Nearest-Neighbour greedy** so we begin with a feasible set of routes.
+* **Temperature** – we set $T_0 = 100$ for a Simulated-Annealing acceptance rule (see step 5).
+* **Operator scores/weights** – every destroy & repair operator gets an initial weight of 1.
+
+---
+
+#### 2  Destroy operators — “large-neighbourhood” part
+
+For every iteration we pick **one** destroy operator with roulette-wheel probability proportional to its current weight:
+
+| Operator                 | What it removes                                                                                   | Why it helps                                                       |
+| ------------------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| **Random Removal**       | Uniformly drops ≈ 25 % of all customers                                                           | Pure diversification; no bias                                      |
+| **Worst-Saving Removal** | Removes customers whose deletion yields the **largest local distance saving**                     | Targets obviously bad arcs; accelerates intensification            |
+| **Shaw Removal**         | Removes customers that are **similar** (geographically close + similar demand) to a seed customer | Creates clusters of holes so repair can rebuild routes differently |
+
+> Implementation detail fixed: we sort by “saving” only, so two items with equal saving no longer trigger a `<` comparison between `Node` objects.
+
+---
+
+#### 3  Repair operators — “re-insert intelligently”
+
+After destruction we have a set **R** of removed customers and a partially empty solution.
+One repair operator is chosen (again by weight‐roulette):
+
+| Operator            | Core idea                                                                                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Cheapest Insert** | For each customer, find the position that causes the smallest distance increase. Simple and fast.                                                                              |
+| **Regret-2 Insert** | For each customer record the **best** and **second-best** insertion costs; pick the customer whose *regret* (2nd−best − best) is largest. Prioritises hard-to-place customers. |
+
+Both operators also **respect capacity**; if a customer can’t fit anywhere it spawns a new route.
+
+---
+
+#### 4  Adaptive scoring
+
+After each iteration we update operator weights:
+
+* **+1** for any operator that produced a *new global best*
+* Slight multiplicative **decay (×0.995)** when an operator is chosen but doesn’t help
+
+That is the **“adaptive”** in ALNS: over time the algorithm automatically favours the destroy/repair pairs that work well on the specific instance.
+
+---
+
+#### 5  Acceptance rule
+
+We **don’t** always keep only better solutions; we use a **Simulated-Annealing acceptance**:
+
+$$
+P(\text{accept worse}) = e^{-\Delta/T}
+$$
+
+with $T \leftarrow 0.999T$ each iteration.
+*Early on* the search can accept worse solutions (exploration).
+*Later* the temperature drops → algorithm turns greedy (exploitation).
+
+---
+
+#### 6  Loop & stopping
+
+* **Iterations**: default 2 000.
+* **Per iteration cost**: destroy O(k), repair worst-case O(k n) ≈ O(n²) for n customers.
+* **Overall**: practical for typical CVRP sizes (a few hundred customers run in seconds).
+
+---
+
+#### 7  Why it works
+
+* **Large moves** (destroy) jump between distant basins of the search space.
+* **Heuristic repair** quickly re-creates high-quality routes without exact optimisation.
+* **Adaptive weights** learn which destroy/repair combinations suit *this* instance.
+* **SA acceptance** avoids getting stuck early.
+
+---
+
+#### 8  Typical tuning levers
+
+| Knob                           | Effect                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------ |
+| `p_destroy` (fraction removed) | Larger ⇒ more diversification, slower runtime; smaller ⇒ greedier              |
+| `iters`                        | More iterations ⇒ better quality, linear runtime growth                        |
+| Cooling $α$                    | Slower cooling (closer to 1) keeps diversification longer                      |
+| Operator set                   | You can plug in other destroy/repair heuristics without touching the main loop |
+
+---
+
+### TL;DR
+
+The ALNS implementation **repeatedly tears out 25 % of the routes (with three different heuristics), plugs the holes back in two smart ways, scores how useful each pair was, and decides stochastically whether to accept the new solution**. Over 2 000 iterations the weight-based learning plus SA acceptance lets it systematically uncover better route combinations than any single fixed neighbourhood could.

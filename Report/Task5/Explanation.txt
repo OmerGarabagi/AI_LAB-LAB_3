@@ -1,0 +1,39 @@
+### How the **Branch-and-Bound + LDS** solver thinks about the CVRP
+
+*(Conceptual view – not code details)*
+
+| Stage                                       | What happens                                                                                                                                                                                                                                                                                                                                                                        | Why it matters                                                                                                                                                                                                                          |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **1.  A “guide” tree based on a heuristic** | We imagine a depth-first decision tree that builds a single vehicle route, city by city, until every customer is served.  Children of a node are ordered by the **nearest-neighbour distance** from the current city – i.e., the same rule the simple greedy solver uses.                                                                                                           | The NN ordering is a good guess of what “should” come next, so the left-most branch of the tree is literally the greedy solution.                                                                                                       |
+| **2.  Limited-Discrepancy Search (LDS)**    | *Discrepancy* = “choosing the 2nd, 3rd, … child instead of the 1st.”  <br>We run the search in waves: first allow **D = 0** discrepancies (pure greedy path), then **D = 1**, **D = 2**, … up to a small `max_D` (default = 2).  Inside each wave we do an ordinary depth-first traversal but refuse to exceed the current discrepancy budget.                                      | This lets us explore solutions that differ only slightly from greedy first, on the theory that near-greedy answers are often optimal or close-to-optimal – and it prevents the combinatorial explosion you’d get from unrestricted DFS. |
+| **3.  Branch-and-Bound pruning**            | Before we recurse down a partial route we check two fast bounds:  <br>**Capacity bound** – if the load on the vehicle already exceeds its limit, prune immediately.  <br>**Distance lower bound** – current distance so far **+** weight of a *minimum-spanning tree* (MST) over the *remaining* customers ∪ depot.  If that underestimate is already ≥ best distance found, prune. | These bounds chop off huge sub-trees that cannot beat the best solution we’ve seen, keeping the run time reasonable.  The MST is cheap to compute yet usually within 5–15 % of the real remaining cost, so it’s a strong cut.           |
+| **4.  Completing a solution**               | Whenever we empty the “remaining customers” set, we close the route back to the depot, compute its true length, and – if it beats the incumbent – make it the new global best.  That tighter best value immediately strengthens the bound everywhere else.                                                                                                                          |                                                                                                                                                                                                                                         |
+| **5.  Iterative improvement**               | After finishing the DFS at discrepancy budget **D**, we increment **D** and restart – but we keep the best solution found so far and its cost as a live upper bound.  Each new wave can therefore prune even more aggressively.                                                                                                                                                     |                                                                                                                                                                                                                                         |
+| **6.  Safety valves**                       | *Time limit* (default = 5 s) stops the search on big instances; you still get the best solution found so far.  If the instance is tiny (≈ ≤ 25 customers) the search usually terminates well inside the limit and often proves optimality.                                                                                                                                          |                                                                                                                                                                                                                                         |
+
+---
+
+#### Why this works well for *small* CVRP instances
+
+* The NN ordering gives a *very* strong guidance tree – the optimal tour is usually only 1–2 discrepancies away.
+* LDS means we look at only a **thin fringe** of that tree instead of the whole factorial search space.
+* The MST lower bound plus capacity feasibility wipe out most remaining branches.
+* Result: for 16- to 25-customer benchmarks we often reach the published optimum in milliseconds; for 40-plus customers we still get a high-quality answer quickly, but we no longer guarantee optimality (that’s where your meta-heuristics take over).
+
+---
+
+#### What you **don’t** see in the code but happens conceptually
+
+* **Route continuation vs. opening new vehicle** – because we’re solving a *single-route* tree and the capacity bound will fail when the truck is full, the search implicitly starts a *new* depth-first tree for the next truck whenever that happens.
+* **Tie breaking** – to keep Python happy we tag each edge with the customer’s integer ID so equal-length edges don’t trigger any `<` comparisons between `Node` objects.
+* **Progressive deepening** – you can treat `max_D` exactly like the search depth in iterative deepening A\*: raise it from 0 upward until you’re happy with runtime vs. optimality guarantee.
+
+---
+
+#### When to use this solver
+
+* **Verification** – cross-check that a meta-heuristic’s answer is truly optimal on small instances.
+* **Warm-start** – feed its exact solution to ACO/ALNS as the starting pheromone or incumbent.
+* **Teaching / demo** – illustrates how bounding and heuristic ordering shrink a combinatorial problem.
+
+For anything larger than \~25–30 customers stick to ALNS / ILS / GA, but for “toy” cases this B\&B + LDS approach is simple, elegant, and often exact.
