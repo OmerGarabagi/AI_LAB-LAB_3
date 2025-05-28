@@ -3,6 +3,7 @@
 import sys
 import os
 import re
+import math
 from typing import Union, Optional
 
 import unittest
@@ -254,8 +255,42 @@ __all__ = [
     "solution_cost",
     "parse_cvrp",
     "greedy_nearest_neighbor",
+    "ackley",
 ]
 
+
+# -------------------------------------------------
+# Ackley benchmark function (d‑dimensional)
+# -------------------------------------------------
+def ackley(
+    x: list[float] | tuple[float, ...],
+    a: float = 20.0,
+    b: float = 0.2,
+    c: float = 2 * math.pi,
+) -> float:
+    """
+    Compute the Ackley function value for a point x.
+
+    Args:
+        x (list[float] | tuple[float]): point in R^d.
+        a, b, c (float): Ackley parameters (default 20, 0.2, 2π).
+
+    Returns:
+        float: f(x); the global optimum is 0 at x = (0,…,0).
+    """
+    d = len(x)
+    if d == 0:
+        raise ValueError("Ackley input vector must have positive length")
+
+    sum_sq = 0.0
+    sum_cos = 0.0
+    for xi in x:
+        sum_sq += xi * xi
+        sum_cos += math.cos(c * xi)
+
+    term1 = -a * math.exp(-b * math.sqrt(sum_sq / d))
+    term2 = -math.exp(sum_cos / d)
+    return term1 + term2 + a + math.e
 
 # -------------------------------------------------
 # Cost utilities
@@ -418,3 +453,6 @@ class TestCostAndCapacity(unittest.TestCase):
 
 if __name__ == "__main__":
     main()
+    # Quick Ackley test (d=10)
+    zero_vec = [0.0] * 10
+    print("\nAckley(0-vector) =", ackley(zero_vec))
