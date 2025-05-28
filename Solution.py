@@ -8,8 +8,7 @@ import random
 import itertools
 import heapq
 from collections import deque, defaultdict
-from typing import Union, Optional
-
+from typing import Union, Optional, List, Tuple, Dict
 import unittest
 
 
@@ -272,6 +271,10 @@ def main():
     print("\n=== Branch-and-Bound LDS (D=2) ===")
     bb_sol = bb_lds(coords, demands, cap, max_D=2, time_limit=5)
     print(f"Routes: {len(bb_sol.routes)}  |  Distance: {bb_sol.total_distance():.2f}")
+
+    print("\n=== Ackley Benchmark (d=10) ===")
+    for m,(x,f) in optimise_ackley(method="ALL", budget=50_000, seed=1).items():
+        print(f"{m:>2}  best f = {f:.3e}")
 
 
 # -------------------------------------------------
@@ -731,6 +734,7 @@ __all__ = [
     "ga_island",
     "alns",
     "bb_lds",
+    "optimise_ackley",
 ]
 # -------------------------------------------------
 # Iterated Local Search with Simulated‑Annealing core
@@ -1159,6 +1163,193 @@ def ackley(
     term1 = -a * math.exp(-b * math.sqrt(sum_sq / d))
     term2 = -math.exp(sum_cos / d)
     return term1 + term2 + a + math.e
+
+# -------------------------------------------------
+# Continuous Ackley optimiser  (SA | TS | GA)
+# -------------------------------------------------
+
+def optimise_ackley(
+        d: int = 10,
+        bounds: Tuple[float, float] = (-32.768, 32.768),
+        budget: int = 50_000,
+        method: Optional[str] = "SA",
+        seed: Optional[int] = None,
+) -> Union[
+        Tuple[List[float], float],               # single method → (best_x, best_f)
+        Dict[str, Tuple[List[float], float]]     # ALL methods → {"SA":(...), ...}
+]:
+    """
+    Optimise the d-dimensional Ackley function with a meta-heuristic.
+
+    method:
+        "SA"  – Simulated Annealing
+        "TS"  – Tabu Search
+        "GA"  – GA (5 islands × 20 pop, SBX + Gaussian mutation)
+        "ALL" or None – run all three and return a dict of results
+    Returns:
+        Either (best_x, best_f)  or  {"SA":(...), "TS":(...), "GA":(...)}
+    """
+    rng  = random.Random(seed)
+    low, high = bounds
+    span = high - low
+    TARGET = 1e-4                     # stop once f ≤ TARGET
+
+    # ---------- small helpers ----------
+    def rand_vec() -> List[float]:
+        return [rng.uniform(low, high) for _ in range(d)]
+
+    def clamp(v: float) -> float:
+        return max(low, min(high, v))
+
+    def perturb(x: List[float], σ: float) -> List[float]:
+        """Gaussian step on one random coordinate (σ is relative to span)."""
+        y = x[:]
+        i = rng.randrange(d)
+        y[i] = clamp(y[i] + rng.gauss(0, σ * span))
+        return y
+
+    # ==============================================================
+    # 1) Simulated Annealing
+    # ==============================================================
+    def _sa() -> Tuple[List[float], float]:
+        x = rand_vec()
+        f = ackley(x)
+        best_x, best_f = x[:], f
+        T, α = 1.0, 0.999
+        evals = 1
+        while evals < budget and best_f > TARGET:
+            y  = perturb(x, 0.03)
+            fy = ackley(y); evals += 1
+            Δ = fy - f
+            if Δ < 0 or rng.random() < math.exp(-Δ / T):
+                x, f = y, fy
+                T *= α
+                if f < best_f:
+                    best_x, best_f = x[:], f
+        return best_x, best_f
+
+    # ==============================================================
+    # 2) Tabu Search
+    # ==============================================================
+    def _ts() -> Tuple[List[float], float]:
+        tabu = deque(maxlen=100)             # short-term memory
+        x = rand_vec();  f = ackley(x)
+        best_x, best_f = x[:], f
+        evals = 1
+        while evals < budget and best_f > TARGET:
+            neighbourhood = []
+            for _ in range(25):              # sample 25 moves
+                y  = perturb(x, 0.05)
+                h  = tuple(round(v, 3) for v in y)  # coarse hash
+                if h in tabu:           continue
+                fy = ackley(y); evals += 1
+                neighbourhood.append((fy, y, h))
+            if not neighbourhood:
+                break
+            fy, y, h = min(neighbourhood, key=lambda t: t[0])
+            tabu.append(h)
+            x, f = y, fy
+            if f < best_f:
+                best_x, best_f = x[:], f
+        return best_x, best_f
+
+    # ==============================================================
+    # 3) GA – 5-island model, SBX crossover, Gaussian mutation
+    # ==============================================================
+    def _ga() -> Tuple[List[float], float]:
+        POP, ISL, GEN = 20, 5, 300          # size, islands, max generations
+        pm, pc = 0.25, 0.9                  # mutation / crossover probs
+        σ_mut  = 0.05
+
+        def fitness(v: List[float]) -> float:   # count evals inside
+            return ackley(v)
+
+        # ----- initialise -----
+        islands  = [[rand_vec() for _ in range(POP)] for _ in range(ISL)]
+        scores   = [[fitness(ind) for ind in isl]     for isl in islands]
+        evals = POP * ISL
+        best_x, best_f = min(
+            (ind for isl in islands for ind in isl), key=fitness), \
+            min(s for sl in scores for s in sl)
+
+        def tournament(isl: int) -> List[float]:
+            a, b, c = rng.sample(range(POP), 3)
+            idx = min((scores[isl][a], a), (scores[isl][b], b),
+                      (scores[isl][c], c))[1]
+            return islands[isl][idx][:]
+
+        def sbx(p: List[float], q: List[float], η: float = 2.0):
+            c1, c2 = p[:], q[:]
+            for i in range(d):
+                if rng.random() < 0.5:
+                    β = (2 * rng.random()) if rng.random() < 0.5 \
+                        else 1 / (2 * (1 - rng.random()))
+                    β **= 1 / (η + 1)
+                    c1[i] = clamp(0.5 * ((1 + β) * p[i] + (1 - β) * q[i]))
+                    c2[i] = clamp(0.5 * ((1 - β) * p[i] + (1 + β) * q[i]))
+            return c1, c2
+
+        # -------- evolution loop --------
+        for g in range(GEN):
+            if evals >= budget or best_f <= TARGET:
+                break
+            for isl in range(ISL):
+                new_pop = []
+                # elitism: keep 2 best
+                elite_idx = sorted(range(POP), key=lambda j: scores[isl][j])[:2]
+                new_pop.extend(islands[isl][i][:] for i in elite_idx)
+
+                while len(new_pop) < POP:
+                    p, q = tournament(isl), tournament(isl)
+                    if rng.random() < pc:
+                        c1, c2 = sbx(p, q)
+                    else:
+                        c1, c2 = p[:], q[:]
+                    for child in (c1, c2):
+                        if rng.random() < pm:
+                            child = perturb(child, σ_mut)
+                        new_pop.append(child)
+                        if len(new_pop) == POP:
+                            break
+
+                # evaluate
+                islands[isl] = new_pop
+                scores[isl]  = [fitness(ind) for ind in new_pop]
+                evals += POP
+
+            # ring migration every 10 generations
+            if g % 10 == 0:
+                for isl in range(ISL):
+                    donor_idx = min(range(POP), key=lambda j: scores[isl][j])
+                    tgt = (isl + 1) % ISL
+                    worst_tgt = max(range(POP), key=lambda j: scores[tgt][j])
+                    islands[tgt][worst_tgt] = islands[isl][donor_idx][:]
+                    scores[tgt][worst_tgt]  = scores[isl][donor_idx]
+
+            # global best update
+            for isl in range(ISL):
+                for j in range(POP):
+                    if scores[isl][j] < best_f:
+                        best_f = scores[isl][j]
+                        best_x = islands[isl][j][:]
+
+        return best_x, best_f
+
+    # ---------- dispatch ----------
+    method = None if method is None else method.upper()
+    if method in (None, "ALL"):
+        return {
+            "SA": _sa(),
+            "TS": _ts(),
+            "GA": _ga(),
+        }
+    if method == "SA":
+        return _sa()
+    if method == "TS":
+        return _ts()
+    if method == "GA":
+        return _ga()
+    raise ValueError("method must be SA | TS | GA | ALL | None")
 
 # -------------------------------------------------
 # Cost utilities
