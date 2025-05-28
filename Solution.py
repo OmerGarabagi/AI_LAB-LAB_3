@@ -233,6 +233,15 @@ def main():
     print("=== Parsing Complete ===")
     print(f"Successfully parsed {n_vertices} vertices with total demand {sum(demands)}")
     
+    # Demonstrate baseline heuristic
+    baseline = greedy_nearest_neighbor(coords, demands, cap)
+    print("=== Baseline Greedy Solution ===")
+    print(f"Total routes : {len(baseline.routes)}")
+    print(f"Total dist.  : {baseline.total_distance():.2f}")
+    for idx, r in enumerate(baseline.routes, 1):
+        ids = [n.id for n in r.nodes]
+        print(f" Route {idx}: {ids}  (load {r.load()})")
+    
     # Optional: You can add your CVRP solving algorithm here
     # solve_cvrp(coords, demands, cap, num_veh)
 
@@ -244,6 +253,7 @@ __all__ = [
     "route_cost",
     "solution_cost",
     "parse_cvrp",
+    "greedy_nearest_neighbor",
 ]
 
 
@@ -273,6 +283,77 @@ def solution_cost(solution: Solution, capacity: int) -> float:
     for r in solution.routes:
         total += route_cost(r, capacity)
     return total
+
+
+# -------------------------------------------------
+# Baseline Greedy – Nearest‑Neighbor with capacity
+# -------------------------------------------------
+def greedy_nearest_neighbor(
+    coords: list[tuple[float, float]],
+    demands: list[int],
+    capacity: int,
+) -> Solution:
+    """
+    Produce a baseline CVRP Solution using a nearest‑neighbor heuristic.
+
+    Strategy:
+    1. Build Node objects (id 0 is the depot).
+    2. While there are unserved customers:
+       * Start a new route at the depot with an empty load.
+       * Iteratively pick the closest still‑unserved customer that fits
+         in the remaining capacity.
+       * When no feasible customer can be added, return to the depot and
+         close the route.
+    3. Repeat until all customers are routed.
+
+    Args:
+        coords (list[(x,y)]): coordinates of all vertices, depot first.
+        demands (list[int]): demand of each vertex, depot first (must be 0).
+        capacity (int): vehicle capacity.
+
+    Returns:
+        Solution: collection of routes found by the heuristic.
+    """
+    # --- build Node list ---
+    nodes = [Node(i, *coords[i], demands[i]) for i in range(len(coords))]
+    depot = nodes[0]
+    customers = nodes[1:]  # exclude depot
+
+    unrouted = set(c.id for c in customers)
+    routes: list[Route] = []
+
+    while unrouted:
+        current_load = 0
+        route_nodes = [depot]  # always start at depot
+        current = depot
+
+        while True:
+            # find nearest feasible customer
+            next_id = None
+            best_dist = float("inf")
+            for cid in unrouted:
+                cust = nodes[cid]
+                if current_load + cust.demand > capacity:
+                    continue
+                dist = current.distance_to(cust)
+                if dist < best_dist:
+                    best_dist = dist
+                    next_id = cid
+            if next_id is None:
+                break  # cannot add more customers to this route
+
+            # add the chosen customer
+            cust = nodes[next_id]
+            route_nodes.append(cust)
+            current_load += cust.demand
+            current = cust
+            unrouted.remove(next_id)
+
+        # return to depot
+        route_nodes.append(depot)
+        routes.append(Route(route_nodes))
+
+    return Solution(routes)
 
 
 # -------------------------------------------------
@@ -336,4 +417,4 @@ class TestCostAndCapacity(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()
