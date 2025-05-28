@@ -260,6 +260,153 @@ def main():
     sa_sol = ils_sa(coords, demands, cap, n_iters=20, seed=123)
     print(f"Routes: {len(sa_sol.routes)}  |  Distance: {sa_sol.total_distance():.2f}")
 
+    print("\n=== GA Island‑Model (4 islands, 80 generations) ===")
+    ga_sol = ga_island(coords, demands, cap, seed=2024)
+    print(f"Routes: {len(ga_sol.routes)}  |  Distance: {ga_sol.total_distance():.2f}")
+
+
+# -------------------------------------------------
+# Genetic Algorithm – Island Model (optional memetic local search)
+# -------------------------------------------------
+def ga_island(
+    coords: list[tuple[float, float]],
+    demands: list[int],
+    capacity: int,
+    pop_size: int = 40,
+    islands: int = 4,
+    generations: int = 80,
+    migrate_every: int = 10,
+    elite: int = 2,
+    cx_prob: float = 0.8,
+    mut_prob: float = 0.2,
+    seed: Optional[int] = None,
+) -> Solution:
+    """
+    Island‑model GA:
+        • Chromosome = permutation of all customer IDs (1..n‑1).
+        • Decode: greedily split permutation into capacity‑feasible routes.
+        • Fitness = total distance (minimise).
+        • Operators: Order‑Crossover (OX), random swap mutation.
+        • Each island evolves independently; every 'migrate_every' generations
+          best 'elite' individuals migrate round‑robin.
+        • Optional: small memetic improvement (2‑swap) on offspring.
+    Complexity:  O(islands · generations · pop_size · n).
+    """
+    rng = random.Random(seed)
+    n_customers = len(coords) - 1
+    customers = list(range(1, n_customers + 1))
+
+    # -------- helper: decode chromosome -> Solution --------
+    def decode(chrom: list[int]) -> Solution:
+        nodes = [Node(i, *coords[i], demands[i]) for i in range(len(coords))]
+        depot = nodes[0]
+        routes = []
+        load = 0
+        current_route = [depot]
+        for cid in chrom:
+            c_node = nodes[cid]
+            if load + c_node.demand > capacity:
+                current_route.append(depot)
+                routes.append(Route(current_route))
+                current_route = [depot]
+                load = 0
+            current_route.append(c_node)
+            load += c_node.demand
+        current_route.append(depot)
+        routes.append(Route(current_route))
+        return Solution(routes)
+
+    # -------- fitness --------
+    def fitness(chrom):
+        return decode(chrom).total_distance()
+
+    # -------- crossover (OX) --------
+    def ox(parent1, parent2):
+        size = len(parent1)
+        a, b = sorted(rng.sample(range(size), 2))
+        hole = parent2[a:b]
+        child = [None] * size
+        child[a:b] = hole
+        fill = [g for g in parent1 if g not in hole]
+        idx = 0
+        for i in range(size):
+            if child[i] is None:
+                child[i] = fill[idx]
+                idx += 1
+        return child
+
+    # -------- mutation: swap two genes --------
+    def mutate(chrom):
+        i, j = rng.sample(range(len(chrom)), 2)
+        chrom[i], chrom[j] = chrom[j], chrom[i]
+
+    # -------- memetic 2‑swap local tweak (single pass) --------
+    def local_improve(chrom):
+        best = fitness(chrom)
+        best_chrom = chrom[:]
+        for _ in range(20):
+            i, j = rng.sample(range(len(chrom)), 2)
+            chrom[i], chrom[j] = chrom[j], chrom[i]
+            f = fitness(chrom)
+            if f < best:
+                best, best_chrom = f, chrom[:]
+            else:
+                chrom[i], chrom[j] = chrom[j], chrom[i]  # revert
+        chrom[:] = best_chrom
+
+    # -------- initialise islands --------
+    island_pops = []
+    for _ in range(islands):
+        pop = []
+        for _ in range(pop_size):
+            perm = customers[:]
+            rng.shuffle(perm)
+            pop.append((perm, fitness(perm)))
+        island_pops.append(pop)
+
+    # -------- evolution loop --------
+    for gen in range(1, generations + 1):
+        for isl_idx in range(islands):
+            pop = island_pops[isl_idx]
+
+            # selection (tournament of 3)
+            def select():
+                cands = rng.sample(pop, 3)
+                return min(cands, key=lambda x: x[1])[0][:]
+
+            new_pop = []
+            # elitism
+            pop.sort(key=lambda x: x[1])
+            new_pop.extend(pop[:elite])
+
+            while len(new_pop) < pop_size:
+                parent1 = select()
+                parent2 = select()
+                if rng.random() < cx_prob:
+                    child = ox(parent1, parent2)
+                else:
+                    child = parent1[:]
+                if rng.random() < mut_prob:
+                    mutate(child)
+                # optional memetic tweak
+                local_improve(child)
+                new_pop.append((child, fitness(child)))
+            island_pops[isl_idx] = new_pop
+
+        # ---------- migration ----------
+        if gen % migrate_every == 0:
+            for isl_idx in range(islands):
+                nxt = (isl_idx + 1) % islands
+                donor = min(island_pops[isl_idx], key=lambda x: x[1])
+                # replace worst in next island
+                worst_idx = max(range(pop_size), key=lambda i: island_pops[nxt][i][1])
+                island_pops[nxt][worst_idx] = donor
+
+    # -------- collect global best --------
+    global_best = min(
+        (ind for pop in island_pops for ind in pop), key=lambda x: x[1]
+    )[0]
+    return decode(global_best)
 
 __all__ = [
     "Node",
@@ -275,6 +422,7 @@ __all__ = [
     "ils_tabu",
     "ils_aco",
     "ils_sa",
+    "ga_island",
 ]
 # -------------------------------------------------
 # Iterated Local Search with Simulated‑Annealing core
