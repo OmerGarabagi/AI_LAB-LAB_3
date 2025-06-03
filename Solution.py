@@ -8,6 +8,8 @@ import random
 import itertools
 import heapq
 import numpy as np
+import time          
+from time import process_time  
 import matplotlib.pyplot as plt
 from collections import deque, defaultdict
 from typing import Union, Optional, List, Tuple, Dict
@@ -201,6 +203,28 @@ def show_solution(name: str, sol: Solution):
         ids = [n.id for n in r.nodes]          # כבר כוללים 0 … 0
         print(f"Vehicle {k}: {ids}")
 
+# -------------------------------------------------
+# Helper: run solver, measure time, pretty-print
+# -------------------------------------------------
+def run_and_report(name: str, solver_fn, *args, **kwargs) -> Solution:
+    """
+    • מודד  elapsed (קיר)  ו-CPU.
+    • מדפיס את עלות הפתרון + מסלולי הרכבים + זמני הריצה.
+    • מחזיר את ה-Solution למקרה שצריך בהמשך.
+    """
+    t0_wall = time.time()
+    t0_cpu  = process_time()
+
+    sol: Solution = solver_fn(*args, **kwargs)
+
+    elapsed = time.time()   - t0_wall
+    cpu     = process_time() - t0_cpu
+
+    show_solution(name, sol)
+    print(f"Elapsed : {elapsed:7.3f}  sec")
+    print(f"CPU time: {cpu:7.3f}  sec\n")
+    return sol
+
 
 def main():
     print("=== CVRP File Parser ===")
@@ -255,32 +279,29 @@ def main():
     print("=== Parsing Complete ===")
     print(f"Successfully parsed {n_vertices} vertices with total demand {sum(demands)}")
 
-    # --------------------------------------------------
-    # Run baseline and meta‑heuristic solvers
-    # --------------------------------------------------
-    base_sol = greedy_nearest_neighbor(coords, demands, cap)
-    show_solution("Baseline Greedy (Nearest-Neighbor)", base_sol)
+    run_and_report("Baseline Greedy (Nearest-Neighbor)",
+               greedy_nearest_neighbor, coords, demands, cap)
 
-    ms_sol = multistage_clarke_wright(coords, demands, cap)
-    show_solution("Multi-Stage (Clarke-Wright + Relocate)", ms_sol)
+    run_and_report("Multi-Stage (Clarke-Wright + Relocate)",
+                multistage_clarke_wright, coords, demands, cap)
 
-    tabu_sol = ils_tabu(coords, demands, cap, n_iters=30, seed=42)
-    show_solution("ILS – Tabu Search", tabu_sol)
+    run_and_report("ILS – Tabu Search",
+                ils_tabu, coords, demands, cap, n_iters=30, seed=42)
 
-    aco_sol = ils_aco(coords, demands, cap, n_iters=10, seed=7)
-    show_solution("ILS – Ant Colony Optimization", aco_sol)
+    run_and_report("ILS – Ant Colony Optimization",
+                ils_aco, coords, demands, cap, n_iters=10, seed=7)
 
-    sa_sol = ils_sa(coords, demands, cap, n_iters=20, seed=123)
-    show_solution("ILS – Simulated Annealing", sa_sol)
+    run_and_report("ILS – Simulated Annealing",
+                ils_sa, coords, demands, cap, n_iters=20, seed=123)
 
-    ga_sol = ga_island(coords, demands, cap, seed=2024)
-    show_solution("GA Island-Model", ga_sol)
+    run_and_report("GA Island-Model",
+                ga_island, coords, demands, cap, seed=2024)
 
-    alns_sol = alns(coords, demands, cap, iters=2000, seed=11)
-    show_solution("ALNS", alns_sol)
+    run_and_report("ALNS",
+                alns, coords, demands, cap, iters=2000, seed=11)
 
-    bb_sol = bb_lds(coords, demands, cap, max_D=2, time_limit=5)
-    show_solution("Branch-and-Bound LDS", bb_sol)
+    run_and_report("Branch-and-Bound  LDS",
+                bb_lds, coords, demands, cap, max_D=2, time_limit=5)
 
 
     # print("\n=== Ackley Benchmark (d=10) ===")
