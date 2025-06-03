@@ -186,6 +186,22 @@ def parse_cvrp(filepath):
     return num_vehicles, num_vertices, capacity, coord_list, demand_list
 
 
+# -------------------------------------------------
+# Pretty-print of a CVRP solution (cost + routes)
+# -------------------------------------------------
+def show_solution(name: str, sol: Solution):
+    """
+    Prints:
+      • heuristic value (total distance)
+      • list of node indices per vehicle, always מתחיל ומסתיים ב-0
+    """
+    print(f"\n=== {name} ===")
+    print(f"Heuristic value (total distance): {sol.total_distance():.2f}")
+    for k, r in enumerate(sol.routes, 1):
+        ids = [n.id for n in r.nodes]          # כבר כוללים 0 … 0
+        print(f"Vehicle {k}: {ids}")
+
+
 def main():
     print("=== CVRP File Parser ===")
     print("This program will parse a VRP (Vehicle Routing Problem) file.")
@@ -242,44 +258,37 @@ def main():
     # --------------------------------------------------
     # Run baseline and meta‑heuristic solvers
     # --------------------------------------------------
-    print("\n=== Baseline Greedy (Nearest‑Neighbor) ===")
     base_sol = greedy_nearest_neighbor(coords, demands, cap)
-    print(f"Routes: {len(base_sol.routes)}  |  Distance: {base_sol.total_distance():.2f}")
+    show_solution("Baseline Greedy (Nearest-Neighbor)", base_sol)
 
-    print("\n=== Multi‑Stage (Clarke‑Wright + Relocate) ===")
     ms_sol = multistage_clarke_wright(coords, demands, cap)
-    print(f"Routes: {len(ms_sol.routes)}  |  Distance: {ms_sol.total_distance():.2f}")
+    show_solution("Multi-Stage (Clarke-Wright + Relocate)", ms_sol)
 
-    print("\n=== ILS – Tabu Search (30 iterations) ===")
     tabu_sol = ils_tabu(coords, demands, cap, n_iters=30, seed=42)
-    print(f"Routes: {len(tabu_sol.routes)}  |  Distance: {tabu_sol.total_distance():.2f}")
+    show_solution("ILS – Tabu Search", tabu_sol)
 
-    print("\n=== ILS – Ant Colony Optimization (10 iterations) ===")
     aco_sol = ils_aco(coords, demands, cap, n_iters=10, seed=7)
-    print(f"Routes: {len(aco_sol.routes)}  |  Distance: {aco_sol.total_distance():.2f}")
+    show_solution("ILS – Ant Colony Optimization", aco_sol)
 
-    print("\n=== ILS – Simulated Annealing (20 iterations) ===")
     sa_sol = ils_sa(coords, demands, cap, n_iters=20, seed=123)
-    print(f"Routes: {len(sa_sol.routes)}  |  Distance: {sa_sol.total_distance():.2f}")
+    show_solution("ILS – Simulated Annealing", sa_sol)
 
-    print("\n=== GA Island‑Model (4 islands, 80 generations) ===")
     ga_sol = ga_island(coords, demands, cap, seed=2024)
-    print(f"Routes: {len(ga_sol.routes)}  |  Distance: {ga_sol.total_distance():.2f}")
+    show_solution("GA Island-Model", ga_sol)
 
-    print("\n=== ALNS (2 000 iterations) ===")
     alns_sol = alns(coords, demands, cap, iters=2000, seed=11)
-    print(f"Routes: {len(alns_sol.routes)}  |  Distance: {alns_sol.total_distance():.2f}")
+    show_solution("ALNS", alns_sol)
 
-    print("\n=== Branch-and-Bound LDS (D=2) ===")
     bb_sol = bb_lds(coords, demands, cap, max_D=2, time_limit=5)
-    print(f"Routes: {len(bb_sol.routes)}  |  Distance: {bb_sol.total_distance():.2f}")
+    show_solution("Branch-and-Bound LDS", bb_sol)
 
-    print("\n=== Ackley Benchmark (d=10) ===")
-    for m,(x,f) in optimise_ackley(method="ALL", budget=50_000, seed=1).items():
-        print(f"{m:>2}  best f = {f:.3e}")
 
-    print("\n=== Ackley Benchmark (visual) ===")
-    plot_ackley_results_3d(budget=50_000, seed=1)
+    # print("\n=== Ackley Benchmark (d=10) ===")
+    # for m,(x,f) in optimise_ackley(method="ALL", budget=50_000, seed=1).items():
+    #     print(f"{m:>2}  best f = {f:.3e}")
+
+    # print("\n=== Ackley Benchmark (visual) ===")
+    # plot_ackley_results_3d(budget=50_000, seed=1)
 
 
 # -------------------------------------------------
@@ -1705,4 +1714,4 @@ if __name__ == "__main__":
         main()
         
     # Quick Ackley test (d=10)
-    print("\nAckley(0-vector) =", ackley([0.0] * 10))
+    # print("\nAckley(0-vector) =", ackley([0.0] * 10))
