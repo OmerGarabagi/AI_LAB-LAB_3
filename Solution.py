@@ -30,11 +30,11 @@ class Node:
         self.y = float(y)
         self.demand = int(demand)
 
-    def distance_to(self, other: "Node") -> float:
+    def distance_to(self, other: "Node") -> int:
         """Euclidean distance to another node."""
         dx = self.x - other.x
         dy = self.y - other.y
-        return (dx * dx + dy * dy) ** 0.5
+        return int(math.hypot(dx, dy) + 0.5)
 
     def __repr__(self):
         return f"Node({self.id}, ({self.x:.1f}, {self.y:.1f}), d={self.demand})"
@@ -856,6 +856,7 @@ def ils_sa(
             best, best_cost = improved, cost
 
     return best
+
 # -------------------------------------------------
 # Iterated Local Search (ILS) with Tabu‑Search core
 # -------------------------------------------------
@@ -907,53 +908,58 @@ def ils_tabu(
     # ---------- Tabu Search core ----------
     def tabu_search(start: Solution) -> Solution:
         current = copy_solution(start)
-        best = copy_solution(current)
+        best     = copy_solution(current)
         best_cost = best.total_distance()
-        tabu: deque[tuple[int, int]] = deque(maxlen=tabu_tenure)
+
+        tabu: deque[tuple[int, int]] = deque(maxlen=tabu_tenure)   # store swapped IDs
 
         for _ in range(ls_iters):
-            best_neighbor = None
-            best_move = None
-            best_delta = float("inf")
+            best_neighbor = None          # (r1,i1,r2,i2,(id1,id2))
+            best_delta    = 0.0           # negative = improvement
 
-            # collect customers indexes once
-            customers = []
-            for r_idx, r in enumerate(current.routes):
-                for n_idx, node in enumerate(r.nodes[1:-1], 1):
-                    customers.append((r_idx, n_idx, node))
+            # collect all customer positions once
+            customers = [
+                (r_idx, n_idx, node)
+                for r_idx, r in enumerate(current.routes)
+                for n_idx, node in enumerate(r.nodes[1:-1], 1)     # skip depots
+            ]
 
-            for (r1, i1, n1), (r2, i2, n2) in itertools.combinations(
-                customers, 2
-            ):
-                if r1 == r2 or (n1.id, n2.id) in tabu:
+            # evaluate every inter-route pair
+            for (r1, i1, n1), (r2, i2, n2) in itertools.combinations(customers, 2):
+                if r1 == r2:                                      # same route – skip
+                    continue
+                if (n1.id, n2.id) in tabu or (n2.id, n1.id) in tabu:
                     continue
 
-                # evaluate swap
-                delta = (
-                    _swap_delta(current.routes[r1], i1, n2, capacity)
-                    + _swap_delta(current.routes[r2], i2, n1, capacity)
-                )
-                if delta is None:
-                    continue  # infeasible capacity
-                if delta < best_delta:
-                    best_delta = delta
-                    best_neighbor = (r1, i1, r2, i2)
-                    best_move = (n1.id, n2.id)
+                d1 = _swap_delta(current.routes[r1], i1, n2, capacity)
+                if d1 is None:                                    # capacity violated
+                    continue
+                d2 = _swap_delta(current.routes[r2], i2, n1, capacity)
+                if d2 is None:
+                    continue
 
+                delta = d1 + d2                                   # total change
+                if delta < best_delta:                            # seek most-improving
+                    best_delta    = delta
+                    best_neighbor = (r1, i1, r2, i2, (n1.id, n2.id))
+
+            # stop if no improving move
             if best_neighbor is None or best_delta >= -1e-6:
-                break  # no improving move
+                break
 
-            r1, i1, r2, i2 = best_neighbor
+            # -------- apply best swap --------
+            r1, i1, r2, i2, move_ids = best_neighbor
             current.routes[r1].nodes[i1], current.routes[r2].nodes[i2] = (
                 current.routes[r2].nodes[i2],
                 current.routes[r1].nodes[i1],
             )
-            tabu.append(best_move)
+            tabu.append(move_ids)
 
+            # update best incumbent
             cur_cost = current.total_distance()
-            if cur_cost < best_cost:
+            if cur_cost < best_cost - 1e-6:
                 best_cost = cur_cost
-                best = copy_solution(current)
+                best      = copy_solution(current)
 
         return best
 
@@ -987,7 +993,7 @@ def ils_tabu(
 
 
 # -------------------------------------------------
-# Iterated Local Search with Ant Colony Optimization core
+# Iterated Local Search with Ant-Colony core (metric-safe)
 # -------------------------------------------------
 def ils_aco(
     coords: list[tuple[float, float]],
@@ -1001,45 +1007,44 @@ def ils_aco(
     rho: float = 0.15,
     seed: Optional[int] = None,
 ) -> Solution:
-    """
-    ILS‑ACO workflow:
-        1. Start with greedy_nearest_neighbor solution.
-        2. For n_iters cycles:
-            a. Perturb current best by random inter‑route swap.
-            b. Run a small Ant‑Colony Optimization search (ants × aco_iters)
-               starting from that perturbed pheromone matrix.
-            c. If ant best beats global best → accept.
-    Key ACO components:
-        • Pheromone matrix tau[i][j] initialised to 1.
-        • Heuristic value eta = 1 / distance.
-        • Transition probability ~ tau^alpha * eta^beta, restricted to
-          customers whose demand fits remaining capacity.
-        • Global pheromone evaporation  (1‑rho) and deposit 1/cost
-          on edges belonging to the iteration best ant.
-    Complexity:  O(n_iters · aco_iters · ants · n²)  (but small constants).
-
-    Returns: Best Solution found.
-    """
     rng = random.Random(seed)
     n = len(coords)
 
-    # Precompute distance and heuristic matrices
-    dist = [[0.0] * n for _ in range(n)]
+    # ---------------- shared structures ----------------
+    nodes = [Node(i, *coords[i], demands[i]) for i in range(n)]
+    depot = nodes[0]
+
+    # integer-rounded distance → heuristic  η = 1 / d
     heuristic = [[0.0] * n for _ in range(n)]
     for i in range(n):
-        xi, yi = coords[i]
         for j in range(n):
-            if i == j:
-                continue
-            xj, yj = coords[j]
-            d = math.hypot(xi - xj, yi - yj)
-            dist[i][j] = d
-            heuristic[i][j] = 1.0 / (d + 1e-9)
+            if i != j:
+                d = nodes[i].distance_to(nodes[j])      # <<< integer metric
+                heuristic[i][j] = 1.0 / (d + 1e-6)
 
-    # Helper: construct a solution using current pheromone
+    # ---------- helpers ----------
+    def copy_solution(sol: Solution) -> Solution:
+        return Solution([Route(r.nodes[:]) for r in sol.routes])
+
+    def random_swap(sol: Solution) -> bool:
+        """Swap two customers in different routes; return False if not possible."""
+        cust = []
+        for r_idx, r in enumerate(sol.routes):
+            for i in range(1, len(r.nodes) - 1):
+                cust.append((r_idx, i))
+        if len(cust) < 2:
+            return False
+        (r1, i1), (r2, i2) = rng.sample(cust, 2)
+        if r1 == r2:
+            return False
+        sol.routes[r1].nodes[i1], sol.routes[r2].nodes[i2] = (
+            sol.routes[r2].nodes[i2],
+            sol.routes[r1].nodes[i1],
+        )
+        return True
+
     def construct_ant(tau: list[list[float]]) -> Solution:
-        nodes = [Node(i, *coords[i], demands[i]) for i in range(n)]
-        depot = nodes[0]
+        """Build one solution using current pheromone/heuristic."""
         unrouted = set(range(1, n))
         routes = []
         while unrouted:
@@ -1047,23 +1052,25 @@ def ils_aco(
             route_nodes = [depot]
             current = 0  # depot index
             while True:
-                feas = [j for j in unrouted if load + demands[j] <= capacity]
+                feas = [
+                    j for j in unrouted if load + demands[j] <= capacity
+                ]
                 if not feas:
                     break
+                # roulette using τ^α * η^β
                 probs = []
-                denom = 0.0
+                tot = 0.0
                 for j in feas:
                     val = (tau[current][j] ** alpha) * (
                         heuristic[current][j] ** beta
                     )
                     probs.append((j, val))
-                    denom += val
-                # roulette
-                r = rng.random() * denom
-                s = 0.0
+                    tot += val
+                r = rng.random() * tot
+                cum = 0.0
                 for j, val in probs:
-                    s += val
-                    if s >= r:
+                    cum += val
+                    if cum >= r:
                         chosen = j
                         break
                 route_nodes.append(nodes[chosen])
@@ -1074,46 +1081,27 @@ def ils_aco(
             routes.append(Route(route_nodes))
         return Solution(routes)
 
-    # Tabu‑swap perturbation for diversification
-    def perturb_solution(sol: Solution):
-        customers = []
-        for r_idx, r in enumerate(sol.routes):
-            for n_idx, _ in enumerate(r.nodes[1:-1], 1):
-                customers.append((r_idx, n_idx))
-        if len(customers) < 2:
-            return
-        (r1, i1), (r2, i2) = rng.sample(customers, 2)
-        if r1 == r2:
-            return
-        sol.routes[r1].nodes[i1], sol.routes[r2].nodes[i2] = (
-            sol.routes[r2].nodes[i2],
-            sol.routes[r1].nodes[i1],
-        )
-
-    # ---------- ILS main ----------
+    # ---------------- ILS + ACO main loop ----------------
     best = greedy_nearest_neighbor(coords, demands, capacity)
     best_cost = best.total_distance()
 
     for _ in range(n_iters):
-        # perturb
-        current = Solution([Route(nodes=r.nodes[:]) for r in best.routes])
-        perturb_solution(current)
+        # 1) perturb incumbent
+        cand = copy_solution(best)
+        random_swap(cand)
 
-        # init pheromone matrix
+        # 2) initialise pheromone (all 1, plus seed incumbent edges)
         tau = [[1.0 for _ in range(n)] for _ in range(n)]
-
-        # optional: seed pheromone with current solution edges
-        for r in current.routes:
+        for r in cand.routes:
             for k in range(len(r.nodes) - 1):
-                i = r.nodes[k].id
-                j = r.nodes[k + 1].id
+                i, j = r.nodes[k].id, r.nodes[k + 1].id
                 tau[i][j] += 1.0
 
-        # ACO loop
-        best_ant = current
-        best_ant_cost = current.total_distance()
+        # 3) inner ACO search
+        iter_best_sol = cand
+        iter_best_cost = cand.total_distance()
 
-        for _iter in range(aco_iters):
+        for _ in range(aco_iters):
             # evaporation
             for i in range(n):
                 for j in range(n):
@@ -1123,24 +1111,23 @@ def ils_aco(
 
             # construct ants
             for _a in range(ants):
-                ant_sol = construct_ant(tau)
-                cost = ant_sol.total_distance()
-                if cost < best_ant_cost:
-                    best_ant = ant_sol
-                    best_ant_cost = cost
+                sol = construct_ant(tau)
+                cost = sol.total_distance()
+                if cost < iter_best_cost:
+                    iter_best_sol, iter_best_cost = sol, cost
 
-            # deposit pheromone using iteration best ant
-            for r in best_ant.routes:
+            # global deposit from iteration-best ant
+            for r in iter_best_sol.routes:
                 for k in range(len(r.nodes) - 1):
-                    i = r.nodes[k].id
-                    j = r.nodes[k + 1].id
-                    tau[i][j] += 1.0 / best_ant_cost
+                    i, j = r.nodes[k].id, r.nodes[k + 1].id
+                    tau[i][j] += 1.0 / iter_best_cost
 
-        # acceptance
-        if best_ant_cost < best_cost - 1e-6:
-            best, best_cost = best_ant, best_ant_cost
+        # 4) accept if improvement
+        if iter_best_cost < best_cost - 1e-6:
+            best, best_cost = iter_best_sol, iter_best_cost
 
     return best
+
 
 # -------------------------------------------------
 # Utility: Prim MST weight for a set of nodes
