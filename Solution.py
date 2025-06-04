@@ -8,9 +8,10 @@ import random
 import itertools
 import heapq
 import numpy as np
-import time          
-from time import process_time  
+import time
+from time import process_time
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from collections import deque, defaultdict
 from typing import Union, Optional, List, Tuple, Dict
 import unittest
@@ -226,6 +227,122 @@ def run_and_report(name: str, solver_fn, *args, **kwargs) -> Solution:
     return sol
 
 
+# -------------------------------------------------
+# Visualization: Plot CVRP routes for a solution
+# -------------------------------------------------
+def plot_routes(solution, coords, title="Routes", save_path=None):
+    """
+    Plots the routes of a Solution object using matplotlib.
+    Each vehicle's route is plotted with a different color/marker.
+    The depot is highlighted.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    # Use non-interactive backend to avoid display issues
+    plt.switch_backend('Agg')
+    
+    colors = plt.cm.get_cmap("tab10", len(solution.routes))
+    depot_x, depot_y = coords[0]
+    plt.figure(figsize=(8, 6))
+    for idx, route in enumerate(solution.routes):
+        xs = [node.x for node in route.nodes]
+        ys = [node.y for node in route.nodes]
+        plt.plot(xs, ys, marker="o", color=colors(idx), label=f"Vehicle {idx+1}")
+        plt.scatter(xs[1:-1], ys[1:-1], color=colors(idx), s=60)
+    # Highlight depot
+    plt.scatter([depot_x], [depot_y], color="black", s=120, marker="*", label="Depot")
+    plt.title(title)
+    plt.xlabel("X")
+    plt.ylabel("Y")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Route plot saved to: {save_path}")
+    else:
+        # Save with a default filename
+        filename = f"{title.replace(' ', '_').replace(':', '')}_routes.png"
+        plt.savefig(filename, dpi=300, bbox_inches='tight')
+        print(f"Route plot saved to: {filename}")
+    
+    plt.close()  # Close the figure to free memory
+
+# -------------------------------------------------
+# Benchmark multiple algorithms and visualize results
+# -------------------------------------------------
+def benchmark_algorithms(algorithms, coords, demands, capacity, n_trials=10):
+    """
+    Runs each algorithm n_trials times, collects total distances,
+    and visualizes results with boxplot and best routes.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    # Use non-interactive backend to avoid display issues
+    plt.switch_backend('Agg')
+    
+    print(f"\n=== Running Benchmark ({n_trials} trials per algorithm) ===")
+    
+    results = {}
+    best_solutions = {}
+    # Compose algorithms dict with additional algorithms
+    # Accepts: coords, demands, capacity
+    def lds_branch_bound(coords, demands, capacity):
+        return bb_lds(coords, demands, capacity, max_D=2, time_limit=5)
+    def alns_solver(coords, demands, capacity):
+        return alns(coords, demands, capacity, iters=2000, seed=11)
+    def multistage_solver(coords, demands, capacity):
+        return multistage_clarke_wright(coords, demands, capacity)
+
+    # Copy original dict and add new entries
+    algorithms_full = dict(algorithms)
+    algorithms_full["LDS (Branch & Bound)"] = lambda c, d, cap: lds_branch_bound(c, d, cap)
+    algorithms_full["ALNS"] = lambda c, d, cap: alns_solver(c, d, cap)
+    algorithms_full["Multistage"] = lambda c, d, cap: multistage_solver(c, d, cap)
+
+    for name, algo in algorithms_full.items():
+        print(f"Benchmarking {name}...")
+        dists = []
+        best_sol = None
+        best_val = float("inf")
+        for trial in range(n_trials):
+            sol = algo(coords, demands, capacity)
+            val = sol.total_distance()
+            dists.append(val)
+            if val < best_val:
+                best_val = val
+                best_sol = sol
+        results[name] = dists
+        best_solutions[name] = best_sol
+        print(f"  Best: {best_val:.1f}, Average: {np.mean(dists):.1f}, Std: {np.std(dists):.1f}")
+
+    # Boxplot
+    plt.figure(figsize=(10, 6))
+    labels = list(algorithms_full.keys())
+    plt.boxplot([results[name] for name in labels], labels=labels)
+    plt.ylabel("Total Distance")
+    plt.title(f"Algorithm Benchmark ({n_trials} Trials)")
+    plt.xticks(rotation=45)
+    plt.grid(True)
+    plt.tight_layout()
+    boxplot_filename = "algorithm_benchmark_boxplot.png"
+    plt.savefig(boxplot_filename, dpi=300, bbox_inches='tight')
+    print(f"\nBenchmark boxplot saved to: {boxplot_filename}")
+    plt.close()
+
+    # Plot best routes for each algorithm
+    print("\nGenerating route visualizations...")
+    for name in labels:
+        sol = best_solutions[name]
+        safe_name = name.replace(' ', '_').replace(':', '')
+        filename = f"best_routes_{safe_name}.png"
+        plot_routes(sol, coords, title=f"Best Routes: {name}", save_path=filename)
+
+    print("\n=== Benchmark Complete ===")
+    print("All plots have been saved to the current directory.")
+
+
 def main():
     print("=== CVRP File Parser ===")
     print("This program will parse a VRP (Vehicle Routing Problem) file.")
@@ -303,13 +420,14 @@ def main():
     run_and_report("Branch-and-Bound  LDS",
                 bb_lds, coords, demands, cap, max_D=2, time_limit=5)
 
-
-    # print("\n=== Ackley Benchmark (d=10) ===")
-    # for m,(x,f) in optimise_ackley(method="ALL", budget=50_000, seed=1).items():
-    #     print(f"{m:>2}  best f = {f:.3e}")
-
-    # print("\n=== Ackley Benchmark (visual) ===")
-    # plot_ackley_results_3d(budget=50_000, seed=1)
+    # Benchmark and visualize algorithms
+    algorithms = {
+        "Simulated Annealing": lambda c, d, cap: ils_sa(c, d, cap, n_iters=20, seed=123),
+        "Tabu Search": lambda c, d, cap: ils_tabu(c, d, cap, n_iters=30, seed=42),
+        "GA Island": lambda c, d, cap: ga_island(c, d, cap, seed=2024),
+        "ACO": lambda c, d, cap: ils_aco(c, d, cap, n_iters=10, seed=7),
+    }
+    benchmark_algorithms(algorithms, coords, demands, cap, n_trials=10)
 
 
 # -------------------------------------------------
@@ -1360,70 +1478,75 @@ def optimise_ackley(
     # ---------- dispatch ----------
     method = None if method is None else method.upper()
     if method in (None, "ALL"):
-        return {
+        results = {
             "SA": _sa(),
             "TS": _ts(),
             "GA": _ga(),
         }
+        # Visualization for d=2 (if called from a context where plotting makes sense)
+        if d == 2:
+            plot_ackley_surface_with_results(results, d)
+        return results
     if method == "SA":
-        return _sa()
+        res = _sa()
+        if d == 2:
+            plot_ackley_surface_with_results({"SA": res}, d)
+        return res
     if method == "TS":
-        return _ts()
+        res = _ts()
+        if d == 2:
+            plot_ackley_surface_with_results({"TS": res}, d)
+        return res
     if method == "GA":
-        return _ga()
+        res = _ga()
+        if d == 2:
+            plot_ackley_surface_with_results({"GA": res}, d)
+        return res
     raise ValueError("method must be SA | TS | GA | ALL | None")
 
 # -------------------------------------------------
-# Visualise Ackley benchmark results (SA / TS / GA)
+# Visualize Ackley surface and overlay optimization results (for d=2)
 # -------------------------------------------------
-def plot_ackley_results_3d(
-    budget: int = 50_000,
-    seed: int = 1,
-    methods: tuple[str, ...] = ("SA", "TS", "GA"),
-    bounds: tuple[float, float] = (-40, 40),
-    grid_points: int = 300,
-) -> None:
-    """
-    • Runs optimise_ackley for each method.
-    • Plots the 2-D Ackley surface and scatters the best (x1,x2) returned
-      by every method (only the first two dims are shown).
-    """
+def plot_ackley_surface_with_results(results: dict, d: int = 2):
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    
+    # Use non-interactive backend to avoid display issues
+    plt.switch_backend('Agg')
+    
+    if d != 2:
+        print("3D surface visualization only supported for d=2.")
+        return
 
-    # ---------- run the benchmark ----------
-    best_pts = {}  # method → (x1,x2,f)
-    for m in methods:
-        x_best, f_best = optimise_ackley(method=m, budget=budget, seed=seed)
-        best_pts[m] = (x_best[0], x_best[1], f_best)
+    X = np.linspace(-5, 5, 100)
+    Y = np.linspace(-5, 5, 100)
+    X, Y = np.meshgrid(X, Y)
+    Z = np.zeros_like(X)
 
-    # ---------- prepare surface ----------
-    low, high = bounds
-    xs = np.linspace(low, high, grid_points)
-    ys = np.linspace(low, high, grid_points)
-    X, Y = np.meshgrid(xs, ys)
+    for i in range(X.shape[0]):
+        for j in range(X.shape[1]):
+            Z[i, j] = ackley([X[i, j], Y[i, j]])
 
-    def ackley_xy(x, y, a=20.0, b=0.2, c=2 * np.pi):
-        term1 = -a * np.exp(-b * np.sqrt(0.5 * (x**2 + y**2)))
-        term2 = -np.exp(0.5 * (np.cos(c * x) + np.cos(c * y)))
-        return term1 + term2 + a + np.e
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.plot_surface(X, Y, Z, cmap='viridis', alpha=0.8)
 
-    Z = ackley_xy(X, Y)
+    for method, (solution, value) in results.items():
+        if len(solution) == 2:
+            ax.scatter(solution[0], solution[1], value, label=method, s=50)
 
-    # ---------- plot ----------
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection="3d")
-    ax.plot_surface(X, Y, Z, linewidth=0, antialiased=True)
-
-    # scatter best points
-    for m, (x1, x2, f) in best_pts.items():
-        ax.scatter(x1, x2, f, s=50, marker="o", label=f"{m}  f={f:.2e}")
-
-    ax.set_xlabel("x₁")
-    ax.set_ylabel("x₂")
-    ax.set_zlabel("f(x₁,x₂)")
-    ax.set_title("Ackley Function with Best Points (d=10 run, first two dims)")
-    ax.legend(loc="upper right")
-
-    plt.show()
+    ax.set_title("Ackley Benchmark - Optimization Results")
+    ax.set_xlabel("x1")
+    ax.set_ylabel("x2")
+    ax.set_zlabel("Ackley(x)")
+    ax.legend()
+    
+    # Save the plot instead of showing it
+    filename = "ackley_optimization_results.png"
+    plt.savefig(filename, dpi=300, bbox_inches='tight')
+    print(f"Ackley optimization plot saved to: {filename}")
+    plt.close()
 
 # -------------------------------------------------
 # Cost utilities
